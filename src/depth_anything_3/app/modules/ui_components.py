@@ -195,12 +195,12 @@ class UIComponents:
             measure_text,
         )
 
-    def create_inference_control_section(self) -> Tuple[gr.Dropdown, gr.Checkbox, gr.Dropdown]:
+    def create_inference_control_section(self) -> Tuple[gr.Dropdown, gr.Checkbox, gr.Dropdown, gr.Checkbox]:
         """
         Create the inference control section (before inference).
 
         Returns:
-            Tuple of (process_res_method_dropdown, infer_gs, ref_view_strategy)
+            Tuple of (process_res_method_dropdown, infer_gs, ref_view_strategy, use_ray_pose)
         """
         with gr.Row():
             process_res_method_dropdown = gr.Dropdown(
@@ -228,7 +228,14 @@ class UIComponents:
                 scale=1,
             )
 
-        return (process_res_method_dropdown, infer_gs, ref_view_strategy)
+            use_ray_pose = gr.Checkbox(
+                label="Use Ray Pose (pose from rays)",
+                value=False,
+                info="Use ray-based pose estimation instead of the camera decoder (may be better for single views).",
+                scale=1,
+            )
+
+        return (process_res_method_dropdown, infer_gs, ref_view_strategy, use_ray_pose)
 
     def create_display_control_section(
         self,

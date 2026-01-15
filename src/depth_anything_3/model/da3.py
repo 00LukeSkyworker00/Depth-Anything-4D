@@ -139,6 +139,7 @@ class DepthAnything3Net(nn.Module):
         with torch.autocast(device_type=x.device.type, enabled=False):
             output = self._process_depth_head(feats, H, W)
             if use_ray_pose:
+                print("!!!!!!!!!!!!!!!!!!Using Ray Pose Estimation!!!!!!!!!!!!!!!!!!!!")
                 output = self._process_ray_pose_estimation(output, H, W)
             else:
                 output = self._process_camera_estimation(feats, H, W, output)

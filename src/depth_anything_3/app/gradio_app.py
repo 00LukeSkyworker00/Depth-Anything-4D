@@ -223,7 +223,7 @@ class DepthAnything3App:
                                 gs_video, gs_info = self.ui_components.create_nvs_video()
 
                         # Inference control section (before inference)
-                        (process_res_method_dropdown, infer_gs, ref_view_strategy_dropdown) = (
+                        (process_res_method_dropdown, infer_gs, ref_view_strategy_dropdown, use_ray_pose) = (
                             self.ui_components.create_inference_control_section()
                         )
 
@@ -280,6 +280,7 @@ class DepthAnything3App:
                 clear_btn,
                 num_max_points,
                 infer_gs,
+                use_ray_pose,
                 ref_view_strategy_dropdown,
                 selected_image_index_state,
                 measure_view_selector,
@@ -323,6 +324,7 @@ class DepthAnything3App:
         clear_btn: gr.ClearButton,
         num_max_points: gr.Slider,
         infer_gs: gr.Checkbox,
+        use_ray_pose: gr.Checkbox,
         ref_view_strategy_dropdown: gr.Dropdown,
         selected_image_index_state: gr.State,
         measure_view_selector: gr.Dropdown,
@@ -373,6 +375,7 @@ class DepthAnything3App:
                 # pass num_max_points
                 num_max_points,
                 infer_gs,
+                use_ray_pose,
                 ref_view_strategy_dropdown,
                 gs_trj_mode,
                 gs_video_quality,

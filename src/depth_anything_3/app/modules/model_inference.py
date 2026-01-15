@@ -69,10 +69,14 @@ class ModelInference:
         save_percentage: float = 30.0,
         num_max_points: int = 1_000_000,
         infer_gs: bool = False,
+        use_ray_pose: bool = False,
         ref_view_strategy: str = "saddle_balanced",
         gs_trj_mode: str = "extend",
         gs_video_quality: str = "high",
     ) -> Tuple[Any, Dict[int, Dict[str, Any]]]:
+        """
+        NOTE: added `use_ray_pose` param here so UI or CLI can toggle ray-based pose estimation.
+        """
         """
         Run DepthAnything3 model inference on images.
 
@@ -136,6 +140,7 @@ class ModelInference:
                 export_dir=None,
                 process_res_method=actual_method,
                 infer_gs=infer_gs,
+                use_ray_pose=use_ray_pose,
                 ref_view_strategy=ref_view_strategy,
             )
         # num_max_points: int = 1_000_000,

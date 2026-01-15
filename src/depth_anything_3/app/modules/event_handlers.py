@@ -142,6 +142,7 @@ class EventHandlers:
         save_percentage: float = 30.0,
         num_max_points: int = 1_000_000,
         infer_gs: bool = False,
+        use_ray_pose: bool = False,
         ref_view_strategy: str = "saddle_balanced",
         gs_trj_mode: str = "extend",
         gs_video_quality: str = "high",
@@ -169,11 +170,12 @@ class EventHandlers:
             save_percentage: Filter percentage for point cloud
             num_max_points: Maximum number of points
             infer_gs: Whether to infer 3D Gaussian Splatting
+            use_ray_pose: Whether to use ray-based pose estimation instead of the camera decoder
             ref_view_strategy: Reference view selection strategy
 
         Returns:
             Tuple of reconstruction results
-        """
+        """        
         if not os.path.isdir(target_dir) or target_dir == "None":
             return (
                 None,
@@ -208,6 +210,7 @@ class EventHandlers:
                 save_percentage=save_percentage,
                 num_max_points=int(num_max_points * 1000),  # Convert K to actual count
                 infer_gs=infer_gs,
+                use_ray_pose=use_ray_pose,
                 ref_view_strategy=ref_view_strategy,
                 gs_trj_mode=gs_trj_mode,
                 gs_video_quality=gs_video_quality,
