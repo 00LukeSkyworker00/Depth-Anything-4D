@@ -5,19 +5,17 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import List
 import numpy as np
+from tqdm import tqdm
 
 import torch
-from torchvision import transforms
-import torch.distributed as dist
-from torch.utils.data import Dataset, ConcatDataset, DataLoader
-from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import Dataset
 
 from depth_anything_3.utils.io.input_processor import InputProcessor
 from depth_anything_3.utils.io.output_processor import OutputProcessor
 
 @dataclass
 class FrameChunk:
-    frame: List[Path]
+    frame: List[str]
     disp1: List[Path]
     disp2: List[Path]
     flow: List[Path]
@@ -25,7 +23,7 @@ class FrameChunk:
     w2c: List[np.ndarray]
 
 class SpringDataset(Dataset):
-    def __init__(self, root:str, isVal:bool, ep_len=9):
+    def __init__(self, root:str, isVal:bool, ep_len=2):
         super().__init__()
 
         self.root = root
@@ -47,9 +45,9 @@ class SpringDataset(Dataset):
         maps: detailmap(ignored) / matchmap(ignored) / rigidmap(ignored) / skymap(ignored)
         """
 
-        def get_pths(root:str, pattern:str):
-            glob = os.path.join(root, pattern)
-            pths = sorted(glob.glob(glob))
+        def get_pths(root:str, type:str, file_extension:str):
+            pattern = os.path.join(root, type, f"{type}_????.{file_extension}")
+            pths = sorted(glob.glob(pattern))
             count = len(pths)
             if count == 0:
                 raise ValueError(f"No files in {root} matched pattern: {pattern}")
@@ -58,10 +56,10 @@ class SpringDataset(Dataset):
         # chunk into episodes
         self.ep_pth = []
         for dir in self.total_dirs:
-            frame_pths, frame_count = get_pths(dir, 'frame_left_????.png')
-            disp1_pths, disp1_count = get_pths(dir, 'disp1_left_????.dsp5')
-            disp2_pths, disp2_count = get_pths(dir, 'disp2_FW_left_????.dsp5')
-            flow_pths, flow_count = get_pths(dir, 'flow_FW_left_????.dsp5')
+            frame_pths, frame_count = get_pths(dir, 'frame_left','png')
+            disp1_pths, disp1_count = get_pths(dir, 'disp1_left','dsp5')
+            disp2_pths, disp2_count = get_pths(dir, 'disp2_FW_left','dsp5')
+            flow_pths, flow_count = get_pths(dir, 'flow_FW_left','flo5')
 
             # read cam pose txt
             K_all = load_intrinsics(os.path.join(dir, 'cam_data', 'intrinsics.txt'))
@@ -75,20 +73,19 @@ class SpringDataset(Dataset):
                     )
             
             for base_idx in range(0, frame_count, ep_len-1):
-                if base_idx + ep_len > frame_count:
+                if base_idx + ep_len >= frame_count:
                     break
                 chunk = FrameChunk(
-                    frame=[Path(frame_pths[base_idx + i]) for i in range(ep_len)],
-                    disp1=[Path(disp1_pths[base_idx + i]) for i in range(ep_len-1)],
+                    frame=[frame_pths[base_idx + i] for i in range(ep_len)],
+                    disp1=[Path(disp1_pths[base_idx + i]) for i in range(ep_len)],
                     disp2=[Path(disp2_pths[base_idx + i]) for i in range(ep_len-1)],
-                    flow=[Path(flow_pths[base_idx + i]) for i in range(ep_len)],
+                    flow=[Path(flow_pths[base_idx + i]) for i in range(ep_len-1)],
                     K=[K_all[base_idx + i] for i in range(ep_len)],
                     w2c=[w2c_all[base_idx + i] for i in range(ep_len)]
                 )
                 self.ep_pth.append(chunk)
         self.input_processor = InputProcessor()
         self.out_processor = OutputProcessor()
-
         
     def __len__(self):
         return len(self.ep_pth)
@@ -96,29 +93,40 @@ class SpringDataset(Dataset):
     def __getitem__(self, index):
 
         chunk:FrameChunk = self.ep_pth[index]
-
-        image = [Image.open(pth) for pth in chunk.frame]
+        image = chunk.frame
         intrinsics = chunk.K
         extrinsics = chunk.w2c
         imgs_cpu, extrinsics, intrinsics = self.input_processor(
                 image,
                 extrinsics.copy() if extrinsics is not None else None,
                 intrinsics.copy() if intrinsics is not None else None,
-                504,
-                "lower_bound_resize",
+                504, "lower_bound_resize", sequential=True
             )
-        
-        disparity = [readDsp5Disp(pth) for pth in chunk.disp1]
+
         #TODO: convert disparity to depth.
-        scene_flow = [readDsp5Disp(pth) for pth in chunk.disp2]
-        optical_flow = [readFlo5Flow(pth) for pth in chunk.flow]
+        disparity = []
+        scene_flow = []
+        optical_flow = []
+        for disp, scene, optic in zip(chunk.disp1, chunk.disp2, chunk.flow):
+            disparity.append(torch.from_numpy(readDsp5Disp(disp)))
+            scene_flow.append(torch.from_numpy(readDsp5Disp(scene)))
+            optical_flow.append(torch.from_numpy(readFlo5Flow(optic)))
+        disparity.append(torch.from_numpy(readDsp5Disp(chunk.disp1[-1])))
+
+        disparity = torch.stack(disparity)
+        scene_flow = torch.stack(scene_flow)
+        optical_flow = torch.stack(optical_flow)
+
+        disparity = disparity.unsqueeze(1)
+        scene_flow = scene_flow.unsqueeze(1)
+        optical_flow = optical_flow.permute(0,3,1,2)
 
         return {
-            'img': imgs_cpu,
+            'img': imgs_cpu, # (s,c,h,w)
             'pose': (intrinsics, extrinsics),
-            'disp': disparity,
-            'flow3d':scene_flow,
-            'flow2d':optical_flow
+            'disp': disparity, # (s,c,h,w)
+            'flow3d': scene_flow, # (s,c,h,w)
+            'flow2d':optical_flow # (s,c,h,w)
         }
         
 
