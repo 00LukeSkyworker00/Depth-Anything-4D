@@ -7,6 +7,9 @@ import torch
 import torch.nn as nn
 from huggingface_hub import PyTorchModelHubMixin
 
+import os
+from pathlib import Path
+
 from depth_anything_3.cfg import create_object, load_config
 from depth_anything_3.registry import MODEL_REGISTRY
 
@@ -44,7 +47,15 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         self.model_name = model_name
 
         # Build the underlying network
-        self.config = load_config(MODEL_REGISTRY[self.model_name])
+        config_pth = Path(MODEL_REGISTRY[self.model_name])
+        config_4d = f"{config_pth.stem}-4d.yaml"
+        custom_pth = config_pth.with_name(config_4d)
+        if os.path.exists(custom_pth):
+            config_pth = custom_pth
+            print(f"Using custom config {config_4d}")
+        else:
+            print(f"Custom config {config_4d} not found!!!")
+        self.config = load_config(str(config_pth))
         self.model = create_object(self.config)
 
     def forward(
@@ -72,10 +83,38 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         Returns:
             Dictionary containing model predictions
         """
+        extrinsics = self._normalize_extrinsics(extrinsics).detach()
+
         # Determine optimal autocast dtype
-        autocast_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        with torch.autocast(device_type=image.device.type, dtype=autocast_dtype):
-            return self.model(
-                image, extrinsics, intrinsics, export_feat_layers, infer_gs, use_ray_pose, ref_view_strategy
-            )
+        # autocast_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        # with torch.autocast(device_type=image.device.type, dtype=autocast_dtype):
+        #     return self.model(
+        #         image, extrinsics, intrinsics, export_feat_layers, infer_gs, use_ray_pose, ref_view_strategy
+        #     )
+        output = self.model(
+            image, extrinsics, intrinsics, export_feat_layers, infer_gs, use_ray_pose, ref_view_strategy
+        )
+        
+        return output
+    
+    def _normalize_extrinsics(self, ex_t: torch.Tensor | None) -> torch.Tensor | None:
+        """Normalize extrinsics"""
+        if ex_t is None:
+            return None
+        transform = affine_inverse(ex_t[:, :1])
+        ex_t_norm = ex_t @ transform
+        c2ws = affine_inverse(ex_t_norm)
+        translations = c2ws[..., :3, 3]
+        dists = translations.norm(dim=-1)
+        median_dist = torch.median(dists)
+        median_dist = torch.clamp(median_dist, min=1e-1)
+        ex_t_norm[..., :3, 3] = ex_t_norm[..., :3, 3] / median_dist
+        return ex_t_norm
+
+@torch.jit.script
+def affine_inverse(A: torch.Tensor):
+    R = A[..., :3, :3]  # ..., 3, 3
+    T = A[..., :3, 3:]  # ..., 3, 1
+    P = A[..., 3:, :]  # ..., 1, 4
+    return torch.cat([torch.cat([R.mT, -R.mT @ T], dim=-1), P], dim=-2)
 

@@ -1,0 +1,10 @@
+__object__:
+  path: depth_anything_3.model.da3_4d
+  name: NestedDepthAnything3Net
+  args: as_params
+
+anyview:
+  __inherit__: depth_anything_3.configs.da3-giant-4d
+
+metric:
+  __inherit__: depth_anything_3.configs.da3metric-large-4d
