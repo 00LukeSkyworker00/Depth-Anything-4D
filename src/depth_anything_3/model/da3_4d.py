@@ -63,7 +63,7 @@ class DepthAnything3Net(nn.Module):
     # Patch size for feature extraction
     PATCH_SIZE = 14
 
-    def __init__(self, net, head, cam_dec=None, cam_enc=None, gs_head=None, gs_adapter=None):
+    def __init__(self, net, head, flow_head, cam_dec=None, cam_enc=None, gs_head=None, gs_adapter=None):
         """
         Initialize DepthAnything3Net with given yaml-initialized configuration.
         """
@@ -96,6 +96,8 @@ class DepthAnything3Net(nn.Module):
                     gs_head["output_dim"] == gs_out_dim
                 ), f"gs_head output_dim should set to {gs_out_dim}, got {gs_head['output_dim']}"
                 self.gs_head = create_object(_wrap_cfg(gs_head))
+
+            self.flow_head = flow_head if isinstance(flow_head, nn.Module) else create_object(_wrap_cfg(flow_head))
 
     def freeze(self):
         """

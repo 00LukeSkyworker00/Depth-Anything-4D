@@ -69,3 +69,14 @@ gs_adapter:
   pred_offset_xy: true
   gaussian_scale_min: 1e-5
   gaussian_scale_max: 30.0
+
+flow_head:
+  __object__:
+    path: depth_anything_3.model.dpt
+    name: DPT
+    args: as_params
+
+  dim_in: 1024
+  output_dim: 1
+  features: 256
+  out_channels: [256, 512, 1024, 1024]
