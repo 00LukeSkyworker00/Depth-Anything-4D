@@ -176,13 +176,13 @@ class DinoVisionTransformer(nn.Module):
                 x.item() for x in torch.linspace(0, drop_path_rate, depth)
             ]  # stochastic depth decay rule
         if ffn_layer == "mlp":
-            logger.info("using MLP layer as FFN")
+            # logger.info("using MLP layer as FFN")
             ffn_layer = Mlp
         elif ffn_layer == "swiglufused" or ffn_layer == "swiglu":
-            logger.info("using SwiGLU layer as FFN")
+            # logger.info("using SwiGLU layer as FFN")
             ffn_layer = SwiGLUFFNFused
         elif ffn_layer == "identity":
-            logger.info("using Identity layer as FFN")
+            # logger.info("using Identity layer as FFN")
 
             def f(*args, **kwargs):
                 return nn.Identity()
@@ -314,7 +314,7 @@ class DinoVisionTransformer(nn.Module):
             if self.alt_start != -1 and (i == self.alt_start - 1) and x.shape[1] >= THRESH_FOR_REF_SELECTION and kwargs.get("cam_token", None) is None:
                 # Select reference view using configured strategy
                 strategy = kwargs.get("ref_view_strategy", "saddle_balanced")
-                logger.info(f"Selecting reference view using strategy: {strategy}")
+                # logger.info(f"Selecting reference view using strategy: {strategy}")
                 b_idx = select_reference_view(x, strategy=strategy)
                 # Reorder views to place reference view first
                 x = reorder_by_reference(x, b_idx)
@@ -322,7 +322,7 @@ class DinoVisionTransformer(nn.Module):
 
             if self.alt_start != -1 and i == self.alt_start:
                 if kwargs.get("cam_token", None) is not None:
-                    logger.info("Using camera conditions provided by the user")
+                    # logger.info("Using camera conditions provided by the user")
                     cam_token = kwargs.get("cam_token")
                 else:
                     ref_token = self.camera_token[:, :1].expand(B, -1, -1)
