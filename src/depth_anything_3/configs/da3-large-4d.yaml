@@ -1,5 +1,5 @@
 __object__:
-  path: depth_anything_3.model.da3
+  path: depth_anything_3.model.da3_4d
   name: DepthAnything3Net
   args: as_params
 
