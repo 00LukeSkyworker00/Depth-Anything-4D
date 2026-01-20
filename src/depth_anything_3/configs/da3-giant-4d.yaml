@@ -80,4 +80,4 @@ flow_head:
   output_dim: 2
   features: *head_features
   out_channels: *head_out_channels
-  head_name: flow
+  head_name: opticflow
