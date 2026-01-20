@@ -1,5 +1,5 @@
 __object__:
-  path: depth_anything_3.model.da3_4d
+  path: depth_anything_3.model.da3
   name: DepthAnything3Net
   args: as_params
 
@@ -9,11 +9,11 @@ net:
     name: DinoV2
     args: as_params
 
-  name: vitg
-  out_layers: [19, 27, 33, 39]
-  alt_start: 13
-  qknorm_start: 13
-  rope_start: 13
+  name: vitl
+  out_layers: [11, 15, 19, 23]
+  alt_start: 8
+  qknorm_start: 8
+  rope_start: 8
   cat_token: True
 
 head:
@@ -22,7 +22,7 @@ head:
     name: DualDPT
     args: as_params
 
-  dim_in: &head_dim_in 3072
+  dim_in: &head_dim_in 2048
   output_dim: 2
   features: &head_features 256
   out_channels: &head_out_channels [256, 512, 1024, 1024]
@@ -34,7 +34,7 @@ cam_enc:
     name: CameraEnc
     args: as_params
 
-  dim_out: 1536
+  dim_out: 1024
 
 cam_dec:
   __object__:
@@ -42,33 +42,7 @@ cam_dec:
     name: CameraDec
     args: as_params
 
-  dim_in: 3072
-
-
-gs_head:
-  __object__:
-    path: depth_anything_3.model.gsdpt
-    name: GSDPT
-    args: as_params
-
-  dim_in: *head_dim_in
-  output_dim: 38  # should align with gs_adapter's setting, for gs params
-  features: *head_features
-  out_channels: *head_out_channels
-
-
-gs_adapter:
-  __object__:
-    path: depth_anything_3.model.gs_adapter
-    name: GaussianAdapter
-    args: as_params
-
-  sh_degree: 2
-  pred_color: false  # predict SH coefficient if false
-  pred_offset_depth: true
-  pred_offset_xy: true
-  gaussian_scale_min: 1e-5
-  gaussian_scale_max: 30.0
+  dim_in: 2048
 
 flow_head:
   __object__:
@@ -80,4 +54,4 @@ flow_head:
   output_dim: 2
   features: *head_features
   out_channels: *head_out_channels
-  head_name: flow
+  head_name: opticflow

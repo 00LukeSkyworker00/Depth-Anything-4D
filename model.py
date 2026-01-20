@@ -83,7 +83,9 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         Returns:
             Dictionary containing model predictions
         """
-        extrinsics = self._normalize_extrinsics(extrinsics).detach()
+        if extrinsics is not None:
+            with torch.no_grad():
+                extrinsics = self._normalize_extrinsics(extrinsics).detach()
 
         # Determine optimal autocast dtype
         # autocast_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16

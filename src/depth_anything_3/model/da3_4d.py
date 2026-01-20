@@ -135,32 +135,36 @@ class DepthAnything3Net(nn.Module):
             Dictionary containing predictions and auxiliary features
         """
         # Extract features using backbone
-        if extrinsics is not None:
-            with torch.autocast(device_type=x.device.type, enabled=False):
-                cam_token = self.cam_enc(extrinsics, intrinsics, x.shape[-2:])
-        else:
-            cam_token = None
-
-        feats, aux_feats = self.backbone(
-            x, cam_token=cam_token, export_feat_layers=export_feat_layers, ref_view_strategy=ref_view_strategy
-        )
-        # feats = [[item for item in feat] for feat in feats]
-        H, W = x.shape[-2], x.shape[-1]
-
-        # Process features through depth head
-        with torch.autocast(device_type=x.device.type, enabled=False):
-            output = self._process_depth_head(feats, H, W)
-            if use_ray_pose:
-                output = self._process_ray_pose_estimation(output, H, W)
+        with torch.no_grad():
+            if extrinsics is not None:
+                with torch.autocast(device_type=x.device.type, enabled=False):
+                    cam_token = self.cam_enc(extrinsics, intrinsics, x.shape[-2:])
             else:
-                output = self._process_camera_estimation(feats, H, W, output)
-            if infer_gs:
-                output = self._process_gs_head(feats, H, W, output, x, extrinsics, intrinsics)
-        
-        output = self._process_mono_sky_estimation(output)    
+                cam_token = None
 
-        # Extract auxiliary features if requested
-        output.aux = self._extract_auxiliary_features(aux_feats, export_feat_layers, H, W)
+            feats, aux_feats = self.backbone(
+                x, cam_token=cam_token, export_feat_layers=export_feat_layers, ref_view_strategy=ref_view_strategy
+            )
+            # # feats = [[item for item in feat] for feat in feats]
+            H, W = x.shape[-2], x.shape[-1]
+
+            # # Process features through depth head
+            # # with torch.autocast(device_type=x.device.type, enabled=False):
+            # output = self._process_depth_head(feats, H, W)
+            # if use_ray_pose:
+            #     output = self._process_ray_pose_estimation(output, H, W)
+            # else:
+            #     output = self._process_camera_estimation(feats, H, W, output)
+            # if infer_gs:
+            #     output = self._process_gs_head(feats, H, W, output, x, extrinsics, intrinsics)
+        
+            # output = self._process_mono_sky_estimation(output)
+
+            # # Extract auxiliary features if requested
+            # output.aux = self._extract_auxiliary_features(aux_feats, export_feat_layers, H, W)
+
+        output = Dict()
+        output = self._process_flow_head(feats, H, W, output)
 
         return output
 
@@ -219,6 +223,19 @@ class DepthAnything3Net(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         """Process features through the depth prediction head."""
         return self.head(feats, H, W, patch_start_idx=0)
+    
+    def _process_flow_head(
+            self, feats: list[torch.Tensor], H: int, W: int, output: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """Process features through the flow prediction head."""
+        flow_init = self.flow_head(feats, H, W, patch_start_idx=0)
+
+        #TODO add RAFT
+        
+        output.flow = flow_init
+
+        return output
+
 
     def _process_camera_estimation(
         self, feats: list[torch.Tensor], H: int, W: int, output: Dict[str, torch.Tensor]

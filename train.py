@@ -80,7 +80,6 @@ def Trainer(rank, args):
 
     # Init model and wrap it in DDP
     model = DepthAnything3.from_pretrained(args.model_dir, custom_config=args.custom_config)
-    exit()
     model = model.to(device)
     model = DDP(model, device_ids=[rank])
     logger_print("Model loaded on device.")
@@ -128,13 +127,64 @@ def Trainer(rank, args):
     logger_print(f"Training scripts backup to folder.")
 
     # Define loss fn
+    def epe_loss(pred_flow, gt_flow, mask=None):
+        diff = pred_flow - gt_flow
+        epe = torch.sqrt((diff ** 2).sum(dim=1) + 1e-8)  # sum over 2 flow channels
+        if mask is not None:
+            epe = epe * mask
+            return epe.sum() / (mask.sum() + 1e-8)
+        return epe.mean()
+    
+    def smoothness_loss(pred_flow, img):
+        dx = torch.abs(pred_flow[:, :, :, :-1] - pred_flow[:, :, :, 1:])
+        dy = torch.abs(pred_flow[:, :, :-1, :] - pred_flow[:, :, 1:, :])
+        weights_x = torch.exp(-torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]), 1, keepdim=True))
+        weights_y = torch.exp(-torch.mean(torch.abs(img[:, :, :-1, :] - img[:, :, 1:, :]), 1, keepdim=True))
+        return (dx * weights_x).mean() + (dy * weights_y).mean()
+
+    def compute_loss(pred_flow, gt_flow, img, λ=0.05, mask=None):
+        epe = epe_loss(pred_flow, gt_flow, mask)
+        smooth = smoothness_loss(pred_flow, img)
+        loss = epe + λ * smooth
+        tqdm.write(f"Loss: {loss} / EPE: {epe} / Smooth: {smooth}")
+        return loss
 
     # Start Training
-    for sample in tqdm(train_dataloader, disable=not is_main_rank):
-        pass
 
-    for sample in tqdm(val_dataloader, disable=not is_main_rank):
-        pass
+    def step(sample):
+        # Load sample
+        img = sample['img'].to(device)
+        flow2d = sample['flow2d'].to(device)
+        ixts = sample['ixts'].to(device)
+        exts = sample['exts'].to(device)
+        
+        # Run model forward
+        out = model(
+            image=img, extrinsics=exts, intrinsics=ixts,
+            export_feat_layers=[], infer_gs=False,
+            use_ray_pose=False, ref_view_strategy="saddle_balanced"
+        )
+
+        # Compute flow loss
+        pred_flow = out.flow['opticflow']
+        loss = compute_loss(pred_flow=pred_flow, gt_flow=flow2d, img=img)
+        
+        # Backward pass and optimizer step
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+    for i in range(total_epochs):
+
+        logger_print(f"Epoch {i}")
+
+        for sample in tqdm(train_dataloader, disable=not is_main_rank):
+            step(sample)
+
+        for sample in tqdm(val_dataloader, disable=not is_main_rank):
+            step(sample)
+
 
     cleanup(rank)
     
@@ -143,7 +193,7 @@ def main():
     # Directory configuration
     parser.add_argument(
         "--model-dir",
-        default="depth-anything/DA3NESTED-GIANT-LARGE-1.1",
+        default="depth-anything/DA3-LARGE-1.1",
         help="Path to model directory for Huggingface",
     )
     parser.add_argument(
@@ -159,7 +209,7 @@ def main():
 
     # Training hyperparameters
     parser.add_argument("--seed", type=int, default=0, help="Seed for reproducibility")
-    parser.add_argument("--batch", type=int, default=12, help="Total batch size")
+    parser.add_argument("--batch", type=int, default=2, help="Total batch size")
     parser.add_argument("--num-worker", type=int, default=-1, help="Number of workers per rank, -1 for automatic detection.")
     parser.add_argument("--epoch", type=int, default=200, help="Total epochs for training")
     parser.add_argument("--max-steps", type=int, default=50000, help="Max iterations")

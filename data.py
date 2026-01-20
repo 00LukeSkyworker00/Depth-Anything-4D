@@ -22,6 +22,26 @@ class FrameChunk:
     K: List[np.ndarray]
     w2c: List[np.ndarray]
 
+class SpringPreproc(Dataset):
+    def __init__(self, root:str, isVal:bool, ep_len=2):
+        super().__init__()
+
+        self.root = root
+        self.total_pth = sorted(glob.glob(root))
+
+        split = int(len(self.total_pth) * 0.8)
+        if not isVal:
+            self.total_pth = self.total_pth[:split]
+        else:
+            self.total_pth = self.total_pth[split:]
+
+    def __len__(self):
+        return len(self.total_pth)
+        
+    def __getitem__(self, index):
+        out = torch.load(self.total_pth[index])
+        return out
+
 class SpringDataset(Dataset):
     def __init__(self, root:str, isVal:bool, ep_len=2):
         super().__init__()
@@ -105,28 +125,30 @@ class SpringDataset(Dataset):
 
         #TODO: convert disparity to depth.
         disparity = []
-        scene_flow = []
+        # scene_flow = []
         optical_flow = []
-        for disp, scene, optic in zip(chunk.disp1, chunk.disp2, chunk.flow):
+        # for disp, scene, optic in zip(chunk.disp1, chunk.disp2, chunk.flow):
+        for disp, optic in zip(chunk.disp1, chunk.flow):
             disparity.append(torch.from_numpy(readDsp5Disp(disp)))
-            scene_flow.append(torch.from_numpy(readDsp5Disp(scene)))
+            # scene_flow.append(torch.from_numpy(readDsp5Disp(scene)))
             optical_flow.append(torch.from_numpy(readFlo5Flow(optic)))
         disparity.append(torch.from_numpy(readDsp5Disp(chunk.disp1[-1])))
 
         disparity = torch.stack(disparity)
-        scene_flow = torch.stack(scene_flow)
+        # scene_flow = torch.stack(scene_flow)
         optical_flow = torch.stack(optical_flow)
 
         disparity = disparity.unsqueeze(1)
-        scene_flow = scene_flow.unsqueeze(1)
+        # scene_flow = scene_flow.unsqueeze(1)
         optical_flow = optical_flow.permute(0,3,1,2)
 
         return {
             'img': imgs_cpu, # (s,c,h,w)
-            'pose': (intrinsics, extrinsics),
+            'ixts': intrinsics,
+            'exts': extrinsics,
             'disp': disparity, # (s,c,h,w)
-            'flow3d': scene_flow, # (s,c,h,w)
-            'flow2d':optical_flow # (s,c,h,w)
+            # 'flow3d': scene_flow, # (s,c,h,w)
+            'flow2d':optical_flow, # (s,c,h,w)
         }
         
 
