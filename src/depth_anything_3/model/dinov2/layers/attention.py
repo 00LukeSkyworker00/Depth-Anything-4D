@@ -9,8 +9,55 @@
 #   https://github.com/rwightman/pytorch-image-models/tree/master/timm/models/vision_transformer.py
 
 import logging
+import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
+from flash_attn_v100.flash_attn_interface import flash_attn_func
+from functools import lru_cache
+
+@lru_cache(maxsize=None)
+def supports_torch_flash_attn() -> bool:
+    """
+    Returns True if the current environment supports PyTorch-native
+    FlashAttention (F.scaled_dot_product_attention on GPU).
+    """
+    # Must be CUDA
+    if not torch.cuda.is_available():
+        return False
+
+    # Must be Ampere+ (sm_80, sm_86, sm_90)
+    major, minor = torch.cuda.get_device_capability()
+    if major < 8:
+        return False
+
+    # Must have FlashAttention enabled in PyTorch
+    if not torch.backends.cuda.flash_sdp_enabled():
+        return False
+
+    return True
+
+@lru_cache(maxsize=None)
+def supports_flash_attn_v100() -> bool:
+    if not torch.cuda.is_available():
+        print("No CUDA")
+        exit()
+        return False
+
+    major, minor = torch.cuda.get_device_capability()
+    # V100 = sm_70
+    if (major, minor) != (7, 0):
+        print("Not sm_70")
+        exit()
+        return False
+
+    try:
+        import flash_attn_v100  # noqa
+    except Exception:
+        print("Cannot import flash_attn_v100")
+        exit()
+        return False
+
+    return True
 
 logger = logging.getLogger("dinov2")
 
@@ -56,7 +103,17 @@ class Attention(nn.Module):
         if self.rope is not None and pos is not None:
             q = self.rope(q, pos)
             k = self.rope(k, pos)
-        if self.fused_attn:
+
+        backend = self.select_attention_backend(
+            q=q,
+            attn_mask=attn_mask,
+            causal=False,
+            fused_attn=self.fused_attn,
+        )
+
+        print(f"Using {backend}")
+
+        if backend == "torch":
             x = F.scaled_dot_product_attention(
                 q,
                 k,
@@ -68,6 +125,20 @@ class Attention(nn.Module):
                     else None
                 ),
             )
+
+        elif backend == "v100":
+            q_ = q.transpose(1, 2).contiguous().half()
+            k_ = k.transpose(1, 2).contiguous().half()
+            v_ = v.transpose(1, 2).contiguous().half()
+
+            x = flash_attn_func(
+                q_, k_, v_,
+                dropout_p=self.attn_drop.p if self.training else 0.0,
+                causal=False,
+            )
+
+            x = x.transpose(1, 2)
+
         else:
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)
@@ -79,6 +150,35 @@ class Attention(nn.Module):
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
+    
+    def select_attention_backend(
+        self,
+        q: torch.Tensor,
+        attn_mask,
+        causal: bool,
+        fused_attn: bool,
+    ):
+        """
+        Returns: "torch", "v100", or "none"
+        """
+
+        if not fused_attn:
+            return "none"
+
+        # 1. PyTorch native FlashAttention (Ampere+)
+        if supports_torch_flash_attn():
+            return "torch"
+
+        # 2. Volta FlashAttention
+        if (
+            supports_flash_attn_v100()
+            and attn_mask is None
+            and not causal
+        ):
+            return "v100"
+
+        # 3. Fallback
+        return "none"
 
     def _forward(self, x: Tensor) -> Tensor:
         B, N, C = x.shape
