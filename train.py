@@ -4,6 +4,7 @@ import psutil
 from tqdm import tqdm
 import socket, shutil, glob
 from datetime import datetime
+import flow_vis
 
 import torch
 import torch.optim as optim
@@ -14,9 +15,16 @@ from torch.distributed import init_process_group, destroy_process_group
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
+from torch.utils.tensorboard import SummaryWriter
+
+import matplotlib.pyplot as plt
+
 from data import SpringDataset
 
 from model import DepthAnything3
+
+def vram() -> str:
+    return f"alloc={torch.cuda.memory_allocated()/1e9:.2f}GB | reserved={torch.cuda.memory_reserved()/1e9:.2f}GB"
 
 def set_rnd_seed(seed:int):
     torch.manual_seed(seed)
@@ -64,6 +72,33 @@ def Trainer(rank, args):
     torch.cuda.set_device(rank)
     device = torch.device(f"cuda:{rank}")
 
+    # Setup logger
+    writer = SummaryWriter(os.path.join(args.out_dir, 'logs'))
+    losses = []
+    def record_loss(loss_list:list[float]):
+        losses.append(torch.tensor(loss_list)) # (N )
+
+    def plt_loss(epoch:int, mode='Train'):
+        assert mode in ['Train', 'Val']
+        if len(losses) == 0:
+            return
+        loss_list = torch.stack(losses, dim=0).to(device).mean(dim=0).cpu() # (N,)
+        loss = loss_list[0].item()
+        epe = loss_list[1].item()
+        smooth = loss_list[2].item()
+        writer.add_scalar(f'{mode}/Total Loss', loss, epoch)
+        writer.add_scalar(f'{mode}/EPE', epe, epoch)
+        writer.add_scalar(f'{mode}/Smoothness', smooth, epoch)
+
+        print(f'==== {mode} Result ====')
+        print(f'{"Total Loss":<15}: {loss:12.3e}')
+        print(f'{"EPE":<15}: {epe:12.3e}')
+        print(f'{"Smoothness Loss":<15}: {smooth:12.3e}')
+        losses.clear()
+
+    def plt_lr(lr:torch.Tensor, step:int):
+        writer.add_scalars('Learn Rate', {'value': lr[0]}, step)
+
     def logger_print(msg:str):
         if is_main_rank:
             print(msg)
@@ -76,11 +111,16 @@ def Trainer(rank, args):
     if args.num_worker < 0:
         num_cores = psutil.cpu_count(logical=False) # number of physical cores
         args.num_worker = max(0, (num_cores // args.world_size)-1)
+        args.num_worker = min(args.num_worker, 8)
     logger_print(f"Log process on Rank {rank}, each rank has {args.num_worker} workers.")
 
     # Init model and wrap it in DDP
     model = DepthAnything3.from_pretrained(args.model_dir, custom_config=args.custom_config)
     model = model.to(device)
+    
+    # Model already has freeze() called in __init__ for NestedDepthAnything3Net
+    # Just ensure training mode is enabled (for batch norm, dropout, etc.)
+    model.train()
     model = DDP(model, device_ids=[rank])
     logger_print("Model loaded on device.")
 
@@ -102,7 +142,7 @@ def Trainer(rank, args):
     data_glob = os.path.join(args.data_dir, "train", "*")
     train_dataloader = init_dataloader(data_glob, isVal=False)
     val_dataloader = init_dataloader(data_glob, isVal=True)
-    logger_print(f"Dataloader\n Train: {len(train_dataloader)} sets\n Val: {len(val_dataloader)} sets")
+    logger_print(f"[Dataloader] Train: {len(train_dataloader)} sets | Val: {len(val_dataloader)} sets")
 
     # Create optimizer
     params = [{'params': model.parameters()}]
@@ -118,8 +158,7 @@ def Trainer(rank, args):
         total_steps=args.max_steps
     )
 
-    logger_print(f"Optimizer & Schedular \n Max Learning Rate: {max_lr}\n"
-                 + f"Max Steps: {args.max_steps}\n Total Epochs: {total_epochs}")
+    logger_print(f"[Optimizer & Schedular] Max LR: {max_lr} | Max Steps: {args.max_steps} | Total Epochs: {total_epochs}")
 
     # Backup training scripts
     if is_main_rank:
@@ -129,32 +168,65 @@ def Trainer(rank, args):
     # Define loss fn
     def epe_loss(pred_flow, gt_flow, mask=None):
         diff = pred_flow - gt_flow
-        epe = torch.sqrt((diff ** 2).sum(dim=1) + 1e-8)  # sum over 2 flow channels
+        epe = torch.sqrt((diff ** 2).sum(dim=2) + 1e-8)  # sum over 2 flow channels (u,v)
         if mask is not None:
             epe = epe * mask
             return epe.sum() / (mask.sum() + 1e-8)
         return epe.mean()
     
     def smoothness_loss(pred_flow, img):
-        dx = torch.abs(pred_flow[:, :, :, :-1] - pred_flow[:, :, :, 1:])
-        dy = torch.abs(pred_flow[:, :, :-1, :] - pred_flow[:, :, 1:, :])
-        weights_x = torch.exp(-torch.mean(torch.abs(img[:, :, :, :-1] - img[:, :, :, 1:]), 1, keepdim=True))
-        weights_y = torch.exp(-torch.mean(torch.abs(img[:, :, :-1, :] - img[:, :, 1:, :]), 1, keepdim=True))
+        # pred_flow: (B, S-1, 2, H, W) - paired frames
+        # img: (B, S, 3, H, W) - original frames
+        # Match temporal dimensions: use first S-1 frames of img to align with flow
+        img = img[:, :-1, :, :, :]  # (B, S-1, 3, H, W)
+        # Compute spatial gradients: dx (horizontal), dy (vertical)
+        dx = torch.abs(pred_flow[:, :, :, :, :-1] - pred_flow[:, :, :, :, 1:])  # (B,S-1,2,H,W-1)
+        dy = torch.abs(pred_flow[:, :, :, :-1, :] - pred_flow[:, :, :, 1:, :])  # (B,S-1,2,H-1,W)
+        # Compute image-based weights by averaging over RGB channels (dim=2)
+        img_dx = torch.abs(img[:, :, :, :, :-1] - img[:, :, :, :, 1:])  # (B,S-1,3,H,W-1)
+        img_dy = torch.abs(img[:, :, :, :-1, :] - img[:, :, :, 1:, :])  # (B,S-1,3,H-1,W)
+        weights_x = torch.exp(-img_dx.mean(dim=2, keepdim=True))  # (B,S-1,1,H,W-1)
+        weights_y = torch.exp(-img_dy.mean(dim=2, keepdim=True))  # (B,S-1,1,H-1,W)
         return (dx * weights_x).mean() + (dy * weights_y).mean()
+    
+    def reduce_loss(loss_tensor):
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+            loss_tensor /= dist.get_world_size()
+        return loss_tensor
 
-    def compute_loss(pred_flow, gt_flow, img, λ=0.05, mask=None):
+    def compute_loss(pred_flow, gt_flow, img, λ=0.05, mask=None, isVal=False):
+        # Create mask from gt_flow to exclude NaN/invalid regions
+        if mask is None:
+            # Mask is 1 where flow is valid (not NaN), 0 where invalid
+            valid_mask = ~torch.isnan(gt_flow).any(dim=2, keepdim=False)  # (B, S-1, H, W)
+            mask = valid_mask.float()
+        
+        # Replace NaN in gt_flow with 0 to prevent NaN propagation
+        gt_flow = torch.nan_to_num(gt_flow, nan=0.0)
+        # print(f"Pred Flow: {pred_flow.shape}, GT Flow: {gt_flow.shape}, Mask: {mask.shape}")
         epe = epe_loss(pred_flow, gt_flow, mask)
         smooth = smoothness_loss(pred_flow, img)
+
+        if isVal:
+            # Sync across ranks for logging
+            epe = reduce_loss(epe)
+            smooth = reduce_loss(smooth)
+
         loss = epe + λ * smooth
-        tqdm.write(f"Loss: {loss} / EPE: {epe} / Smooth: {smooth}")
+        if is_main_rank:
+            record_loss([loss.detach(), epe.detach(), smooth.detach()])
         return loss
 
     # Start Training
 
-    def step(sample):
+    def step(sample, step:int, mode='train'):
+        assert mode in ['train', 'val']
+        isVal = (mode == 'val')
+
         # Load sample
         img = sample['img'].to(device)
-        flow2d = sample['flow2d'].to(device)
+        flow2d = sample['flow2d'].to(device)  # (B, S-1, 2, H, W)
         ixts = sample['ixts'].to(device)
         exts = sample['exts'].to(device)
         
@@ -166,25 +238,64 @@ def Trainer(rank, args):
         )
 
         # Compute flow loss
-        pred_flow = out.flow['opticflow']
+        pred_flow = out.flow['opticflow']  # (B, S-1, 2, H, W)
         loss = compute_loss(pred_flow=pred_flow, gt_flow=flow2d, img=img)
         
-        # Backward pass and optimizer step
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
+        if not isVal:
+            # Backward pass and optimizer step
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            plt_lr(scheduler.get_last_lr(), step)
 
+        return (
+            img[0,0].permute(1,2,0).detach().cpu().numpy(),
+            pred_flow[0,0].permute(1,2,0).detach().cpu().numpy(),
+            flow2d[0,0].permute(1,2,0).detach().cpu().numpy(),
+        )
+
+    def log_viz(img, pred, gt, epoch, mode='Train'):
+        if is_main_rank:
+            # Visualize and save results
+            img_vis = (img - img.min()) / (img.max() - img.min() + 1e-8)
+            # Replace NaN values in flow for visualization
+            pred = np.nan_to_num(pred, nan=0.0)
+            gt = np.nan_to_num(gt, nan=0.0)
+            flow_pred_vis = flow_vis.flow_to_color(pred, convert_to_bgr=False)
+            flow_gt_vis = flow_vis.flow_to_color(gt, convert_to_bgr=False)
+
+            fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+            axs[0].imshow(img_vis)
+            axs[0].set_title('Input Image')
+            axs[0].axis('off')
+            axs[1].imshow(flow_pred_vis)
+            axs[1].set_title('Predicted Flow')
+            axs[1].axis('off')
+            axs[2].imshow(flow_gt_vis)
+            axs[2].set_title('Ground Truth Flow')
+            axs[2].axis('off')
+            plt.tight_layout()
+            writer.add_figure(f'{mode}/Visualize', fig, epoch)
+            plt.close()
+
+    step_counter = 0
     for i in range(total_epochs):
 
         logger_print(f"Epoch {i}")
 
+        train_dataloader.sampler.set_epoch(i)
         for sample in tqdm(train_dataloader, disable=not is_main_rank):
-            step(sample)
+            img, pred, gt = step(sample, step_counter, mode='train')
+            step_counter += 1
+        plt_loss(i, mode='Train')
+        log_viz(img, pred, gt, i, 'Train')
 
+        val_dataloader.sampler.set_epoch(i)
         for sample in tqdm(val_dataloader, disable=not is_main_rank):
-            step(sample)
-
+            img, pred, gt = step(sample, step_counter, mode='val')
+        plt_loss(i, mode='Val')
+        log_viz(img, pred, gt, i, 'Val')
 
     cleanup(rank)
     
@@ -209,11 +320,11 @@ def main():
 
     # Training hyperparameters
     parser.add_argument("--seed", type=int, default=0, help="Seed for reproducibility")
-    parser.add_argument("--batch", type=int, default=2, help="Total batch size")
+    parser.add_argument("--batch", type=int, default=6, help="Total batch size")
     parser.add_argument("--num-worker", type=int, default=-1, help="Number of workers per rank, -1 for automatic detection.")
-    parser.add_argument("--epoch", type=int, default=200, help="Total epochs for training")
-    parser.add_argument("--max-steps", type=int, default=50000, help="Max iterations")
-    parser.add_argument("--max-lr", type=float, default=1e-3, help="Max learning rate")
+    parser.add_argument("--epoch", type=int, default=100, help="Total epochs for training")
+    parser.add_argument("--max-steps", type=int, default=5000, help="Max iterations")
+    parser.add_argument("--max-lr", type=float, default=1e-5, help="Max learning rate")
     parser.add_argument("--ep-len", type=int, default=3, help="Episode length of the input clips")
     parser.add_argument("--custom-config", type=str, default="da3nested-giant-large-4d.yaml", help="Points to custom config file")
 

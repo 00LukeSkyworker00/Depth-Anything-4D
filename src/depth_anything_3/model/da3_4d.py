@@ -36,7 +36,6 @@ from depth_anything_3.utils.ray_utils import get_extrinsic_from_camray
 def _wrap_cfg(cfg_obj):
     return OmegaConf.create(cfg_obj)
 
-
 class DepthAnything3Net(nn.Module):
     """
     Depth Anything 3 network for depth estimation and camera pose estimation.
@@ -97,17 +96,22 @@ class DepthAnything3Net(nn.Module):
                 ), f"gs_head output_dim should set to {gs_out_dim}, got {gs_head['output_dim']}"
                 self.gs_head = create_object(_wrap_cfg(gs_head))
 
-            self.flow_head = flow_head if isinstance(flow_head, nn.Module) else create_object(_wrap_cfg(flow_head))
+        self.flow_head = flow_head if isinstance(flow_head, nn.Module) else create_object(_wrap_cfg(flow_head))
+
+        self.freeze()
 
     def freeze(self):
         """
         Freeze all parameters in the network (backbone, head, camera, gs modules).
         Any new layers added after freeze() will remain trainable.
         """
+        freezed_modules = ""
         for module in [self.backbone, self.head, self.cam_dec, self.cam_enc, self.gs_adapter, self.gs_head]:
             if module is not None:
+                freezed_modules += f"{module.__class__.__name__}, "
                 for param in module.parameters():
                     param.requires_grad = False
+        print(f"Frozen modules: {freezed_modules}")
 
     def forward(
         self,
@@ -168,67 +172,80 @@ class DepthAnything3Net(nn.Module):
 
         return output
 
-    def _process_mono_sky_estimation(
-        self, output: Dict[str, torch.Tensor]
-    ) -> Dict[str, torch.Tensor]:
-        """Process mono sky estimation."""
-        if "sky" not in output:
-            return output
-        non_sky_mask = compute_sky_mask(output.sky, threshold=0.3)
-        if non_sky_mask.sum() <= 10:
-            return output
-        if (~non_sky_mask).sum() <= 10:
-            return output
+    # def _process_mono_sky_estimation(
+    #     self, output: Dict[str, torch.Tensor]
+    # ) -> Dict[str, torch.Tensor]:
+    #     """Process mono sky estimation."""
+    #     if "sky" not in output:
+    #         return output
+    #     non_sky_mask = compute_sky_mask(output.sky, threshold=0.3)
+    #     if non_sky_mask.sum() <= 10:
+    #         return output
+    #     if (~non_sky_mask).sum() <= 10:
+    #         return output
         
-        non_sky_depth = output.depth[non_sky_mask]
-        if non_sky_depth.numel() > 100000:
-            idx = torch.randint(0, non_sky_depth.numel(), (100000,), device=non_sky_depth.device)
-            sampled_depth = non_sky_depth[idx]
-        else:
-            sampled_depth = non_sky_depth
-        non_sky_max = torch.quantile(sampled_depth, 0.99)
+    #     non_sky_depth = output.depth[non_sky_mask]
+    #     if non_sky_depth.numel() > 100000:
+    #         idx = torch.randint(0, non_sky_depth.numel(), (100000,), device=non_sky_depth.device)
+    #         sampled_depth = non_sky_depth[idx]
+    #     else:
+    #         sampled_depth = non_sky_depth
+    #     non_sky_max = torch.quantile(sampled_depth, 0.99)
 
-        # Set sky regions to maximum depth and high confidence
-        output.depth, _ = set_sky_regions_to_max_depth(
-            output.depth, None, non_sky_mask, max_depth=non_sky_max
-        )
-        return output
+    #     # Set sky regions to maximum depth and high confidence
+    #     output.depth, _ = set_sky_regions_to_max_depth(
+    #         output.depth, None, non_sky_mask, max_depth=non_sky_max
+    #     )
+    #     return output
 
-    def _process_ray_pose_estimation(
-        self, output: Dict[str, torch.Tensor], height: int, width: int
-    ) -> Dict[str, torch.Tensor]:
-        """Process ray pose estimation if ray pose decoder is available."""
-        if "ray" in output and "ray_conf" in output:
-            pred_extrinsic, pred_focal_lengths, pred_principal_points = get_extrinsic_from_camray(
-                output.ray,
-                output.ray_conf,
-                output.ray.shape[-3],
-                output.ray.shape[-2],
-            )
-            pred_extrinsic = affine_inverse(pred_extrinsic) # w2c -> c2w
-            pred_extrinsic = pred_extrinsic[:, :, :3, :]
-            pred_intrinsic = torch.eye(3, 3)[None, None].repeat(pred_extrinsic.shape[0], pred_extrinsic.shape[1], 1, 1).clone().to(pred_extrinsic.device)
-            pred_intrinsic[:, :, 0, 0] = pred_focal_lengths[:, :, 0] / 2 * width
-            pred_intrinsic[:, :, 1, 1] = pred_focal_lengths[:, :, 1] / 2 * height
-            pred_intrinsic[:, :, 0, 2] = pred_principal_points[:, :, 0] * width * 0.5
-            pred_intrinsic[:, :, 1, 2] = pred_principal_points[:, :, 1] * height * 0.5
-            del output.ray
-            del output.ray_conf
-            output.extrinsics = pred_extrinsic
-            output.intrinsics = pred_intrinsic
-        return output
+    # def _process_ray_pose_estimation(
+    #     self, output: Dict[str, torch.Tensor], height: int, width: int
+    # ) -> Dict[str, torch.Tensor]:
+    #     """Process ray pose estimation if ray pose decoder is available."""
+    #     if "ray" in output and "ray_conf" in output:
+    #         pred_extrinsic, pred_focal_lengths, pred_principal_points = get_extrinsic_from_camray(
+    #             output.ray,
+    #             output.ray_conf,
+    #             output.ray.shape[-3],
+    #             output.ray.shape[-2],
+    #         )
+    #         pred_extrinsic = affine_inverse(pred_extrinsic) # w2c -> c2w
+    #         pred_extrinsic = pred_extrinsic[:, :, :3, :]
+    #         pred_intrinsic = torch.eye(3, 3)[None, None].repeat(pred_extrinsic.shape[0], pred_extrinsic.shape[1], 1, 1).clone().to(pred_extrinsic.device)
+    #         pred_intrinsic[:, :, 0, 0] = pred_focal_lengths[:, :, 0] / 2 * width
+    #         pred_intrinsic[:, :, 1, 1] = pred_focal_lengths[:, :, 1] / 2 * height
+    #         pred_intrinsic[:, :, 0, 2] = pred_principal_points[:, :, 0] * width * 0.5
+    #         pred_intrinsic[:, :, 1, 2] = pred_principal_points[:, :, 1] * height * 0.5
+    #         del output.ray
+    #         del output.ray_conf
+    #         output.extrinsics = pred_extrinsic
+    #         output.intrinsics = pred_intrinsic
+    #     return output
 
-    def _process_depth_head(
-        self, feats: list[torch.Tensor], H: int, W: int
-    ) -> Dict[str, torch.Tensor]:
-        """Process features through the depth prediction head."""
-        return self.head(feats, H, W, patch_start_idx=0)
+    # def _process_depth_head(
+    #     self, feats: list[torch.Tensor], H: int, W: int
+    # ) -> Dict[str, torch.Tensor]:
+    #     """Process features through the depth prediction head."""
+    #     return self.head(feats, H, W, patch_start_idx=0)
     
     def _process_flow_head(
             self, feats: list[torch.Tensor], H: int, W: int, output: Dict[str, torch.Tensor]
     ) -> Dict[str, torch.Tensor]:
-        """Process features through the flow prediction head."""
-        flow_init = self.flow_head(feats, H, W, patch_start_idx=0)
+        """
+        Process features through the flow prediction head.
+        feats: Layers of (feats, cam_token), where feats is (B,S,N,C) and cam_token is (B,S,C)
+        """
+        paired_feats = []
+        for feat in feats:
+            feat1 = feat[0][:, :-1]  # (B, S-1, N, C)
+            feat2 = feat[0][:, 1:]   # (B, S-1, N, C)
+            feat_pair = torch.cat([feat1, feat2], dim=-1)  # (B, S-1, N, 2C)
+            # Camera tokens must match the paired temporal dimension (S-1).
+            # Use camera token for the 'first' frame in each pair to align with feat1.
+            cam_token_paired = feat[1][:, :-1]  # (B, S-1, C)
+            paired_feats.append((feat_pair.detach(), cam_token_paired.detach()))
+
+        flow_init = self.flow_head(paired_feats, H, W, patch_start_idx=0)
 
         #TODO add RAFT
         
@@ -361,10 +378,6 @@ class NestedDepthAnything3Net(nn.Module):
         super().__init__()
         self.da3:DepthAnything3Net = create_object(anyview)
         self.da3_metric:DepthAnything3Net = create_object(metric)
-
-        # Freeze backbones
-        self.da3.freeze()
-        self.da3_metric.freeze()
 
     def forward(
         self,

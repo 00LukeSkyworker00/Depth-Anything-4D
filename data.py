@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 import torch
 from torch.utils.data import Dataset
+import torch.nn.functional as F
 
 from depth_anything_3.utils.io.input_processor import InputProcessor
 from depth_anything_3.utils.io.output_processor import OutputProcessor
@@ -140,7 +141,7 @@ class SpringDataset(Dataset):
 
         disparity = disparity.unsqueeze(1)
         # scene_flow = scene_flow.unsqueeze(1)
-        optical_flow = optical_flow.permute(0,3,1,2)
+        optical_flow = resize_flow(optical_flow.permute(0,3,1,2), imgs_cpu.shape[2], imgs_cpu.shape[3])
 
         return {
             'img': imgs_cpu, # (s,c,h,w)
@@ -150,7 +151,18 @@ class SpringDataset(Dataset):
             # 'flow3d': scene_flow, # (s,c,h,w)
             'flow2d':optical_flow, # (s,c,h,w)
         }
-        
+
+def resize_flow(flow, target_h, target_w):
+    B, C, H, W = flow.shape
+
+    flow = F.interpolate(
+        flow, size=(target_h, target_w),
+        mode="bilinear", align_corners=False
+    )
+
+    flow[:, 0] *= target_w / W  # scale x
+    flow[:, 1] *= target_h / H  # scale y
+    return flow
 
 def load_extrinsics(path):
     # (N, 16)

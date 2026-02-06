@@ -12,7 +12,6 @@ import logging
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from flash_attn_v100.flash_attn_interface import flash_attn_func
 from functools import lru_cache
 
 @lru_cache(maxsize=None)
@@ -52,6 +51,7 @@ def supports_flash_attn_v100() -> bool:
 
     try:
         import flash_attn_v100  # noqa
+        from flash_attn_v100.flash_attn_interface import flash_attn_func
     except Exception:
         print("Cannot import flash_attn_v100")
         exit()
@@ -110,8 +110,6 @@ class Attention(nn.Module):
             causal=False,
             fused_attn=self.fused_attn,
         )
-
-        print(f"Using {backend}")
 
         if backend == "torch":
             x = F.scaled_dot_product_attention(

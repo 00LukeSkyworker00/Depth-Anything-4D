@@ -46,12 +46,13 @@ cam_dec:
 
 flow_head:
   __object__:
-    path: depth_anything_3.model.dpt
-    name: DPT
+    path: depth_anything_3.model.flowdpt
+    name: FlowDPT
     args: as_params
 
-  dim_in: *head_dim_in
+  dim_in: 4096
   output_dim: 2
   features: *head_features
   out_channels: *head_out_channels
-  head_name: opticflow
+  activation: linear
+  use_image_context: false
