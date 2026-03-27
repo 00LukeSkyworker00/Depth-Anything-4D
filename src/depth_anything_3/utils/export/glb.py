@@ -158,7 +158,7 @@ def export_to_glb(
     scene.metadata["hf_alignment"] = A  # For camera wireframes and external reuse
 
     if points.shape[0] > 0:
-        pc = trimesh.points.PointCloud(vertices=points, colors=colors)
+        pc = trimesh.points.PointCloud(vertices=points, colors=colors)  # Store frame idx in alpha
         scene.add_geometry(pc)
 
     # 8) Draw cameras (wireframe pyramids), using the same transform A
@@ -244,7 +244,7 @@ def _depths_to_world_points_with_colors(
         cols = images_u8[i].reshape(-1, 3)[vidx].astype(np.uint8)  # (M,3)
 
         pts_all.append(Xw)
-        col_all.append(cols)
+        col_all.append(np.concatenate([cols, np.full((cols.shape[0], 1), i)], axis=-1))  # (M,4)
 
     if len(pts_all) == 0:
         return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.uint8)
