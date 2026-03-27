@@ -32,6 +32,8 @@ from depth_anything_3.utils.alignment import (
 from depth_anything_3.utils.geometry import affine_inverse, as_homogeneous, map_pdf_to_opacity
 from depth_anything_3.utils.ray_utils import get_extrinsic_from_camray
 
+def vram() -> str:
+    return f"alloc={torch.cuda.memory_allocated()/1e9:.2f}GB | reserved={torch.cuda.memory_reserved()/1e9:.2f}GB"
 
 def _wrap_cfg(cfg_obj):
     return OmegaConf.create(cfg_obj)
@@ -62,7 +64,7 @@ class DepthAnything3Net(nn.Module):
     # Patch size for feature extraction
     PATCH_SIZE = 14
 
-    def __init__(self, net, head, flow_head, cam_dec=None, cam_enc=None, gs_head=None, gs_adapter=None):
+    def __init__(self, net, head, raft_head, cam_dec=None, cam_enc=None, gs_head=None, gs_adapter=None):
         """
         Initialize DepthAnything3Net with given yaml-initialized configuration.
         """
@@ -96,7 +98,7 @@ class DepthAnything3Net(nn.Module):
                 ), f"gs_head output_dim should set to {gs_out_dim}, got {gs_head['output_dim']}"
                 self.gs_head = create_object(_wrap_cfg(gs_head))
 
-        self.flow_head = flow_head if isinstance(flow_head, nn.Module) else create_object(_wrap_cfg(flow_head))
+        self.raft_head = raft_head if isinstance(raft_head, nn.Module) else create_object(_wrap_cfg(raft_head))
 
         self.freeze()
 
@@ -139,6 +141,7 @@ class DepthAnything3Net(nn.Module):
             Dictionary containing predictions and auxiliary features
         """
         # Extract features using backbone
+        # print("Before Start   : ",vram())
         with torch.no_grad():
             if extrinsics is not None:
                 with torch.autocast(device_type=x.device.type, enabled=False):
@@ -149,109 +152,144 @@ class DepthAnything3Net(nn.Module):
             feats, aux_feats = self.backbone(
                 x, cam_token=cam_token, export_feat_layers=export_feat_layers, ref_view_strategy=ref_view_strategy
             )
-            # # feats = [[item for item in feat] for feat in feats]
+            # feats = [[item.detach() for item in feat] for feat in feats]
             H, W = x.shape[-2], x.shape[-1]
 
-            # # Process features through depth head
-            # # with torch.autocast(device_type=x.device.type, enabled=False):
-            # output = self._process_depth_head(feats, H, W)
-            # if use_ray_pose:
-            #     output = self._process_ray_pose_estimation(output, H, W)
-            # else:
-            #     output = self._process_camera_estimation(feats, H, W, output)
-            # if infer_gs:
-            #     output = self._process_gs_head(feats, H, W, output, x, extrinsics, intrinsics)
+            # print("After Backbone : ",vram())
+            # Process features through depth head
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                output = self._process_depth_head(feats, H, W)
+                # if use_ray_pose:
+                #     output = self._process_ray_pose_estimation(output, H, W)
+                # else:
+                #     output = self._process_camera_estimation(feats, H, W, output)
+                # if infer_gs:
+                #     output = self._process_gs_head(feats, H, W, output, x, extrinsics, intrinsics)
+            
+                # output = self._process_mono_sky_estimation(output)
+
+                # # Extract auxiliary features if requested
+                # output.aux = self._extract_auxiliary_features(aux_feats, export_feat_layers, H, W)
+                
+                del feats
+                torch.cuda.empty_cache()
+        # print("After DepthDPT : ",vram())
+        output = self._process_raft_head(output)
+        # print("After SEA-RAFT : ",vram())
         
-            # output = self._process_mono_sky_estimation(output)
-
-            # # Extract auxiliary features if requested
-            # output.aux = self._extract_auxiliary_features(aux_feats, export_feat_layers, H, W)
-
-        output = Dict()
-        output = self._process_flow_head(feats, H, W, output)
+        # output = self._process_flow_head(feats, H, W, output)
 
         return output
-
-    # def _process_mono_sky_estimation(
-    #     self, output: Dict[str, torch.Tensor]
-    # ) -> Dict[str, torch.Tensor]:
-    #     """Process mono sky estimation."""
-    #     if "sky" not in output:
-    #         return output
-    #     non_sky_mask = compute_sky_mask(output.sky, threshold=0.3)
-    #     if non_sky_mask.sum() <= 10:
-    #         return output
-    #     if (~non_sky_mask).sum() <= 10:
-    #         return output
-        
-    #     non_sky_depth = output.depth[non_sky_mask]
-    #     if non_sky_depth.numel() > 100000:
-    #         idx = torch.randint(0, non_sky_depth.numel(), (100000,), device=non_sky_depth.device)
-    #         sampled_depth = non_sky_depth[idx]
-    #     else:
-    #         sampled_depth = non_sky_depth
-    #     non_sky_max = torch.quantile(sampled_depth, 0.99)
-
-    #     # Set sky regions to maximum depth and high confidence
-    #     output.depth, _ = set_sky_regions_to_max_depth(
-    #         output.depth, None, non_sky_mask, max_depth=non_sky_max
-    #     )
-    #     return output
-
-    # def _process_ray_pose_estimation(
-    #     self, output: Dict[str, torch.Tensor], height: int, width: int
-    # ) -> Dict[str, torch.Tensor]:
-    #     """Process ray pose estimation if ray pose decoder is available."""
-    #     if "ray" in output and "ray_conf" in output:
-    #         pred_extrinsic, pred_focal_lengths, pred_principal_points = get_extrinsic_from_camray(
-    #             output.ray,
-    #             output.ray_conf,
-    #             output.ray.shape[-3],
-    #             output.ray.shape[-2],
-    #         )
-    #         pred_extrinsic = affine_inverse(pred_extrinsic) # w2c -> c2w
-    #         pred_extrinsic = pred_extrinsic[:, :, :3, :]
-    #         pred_intrinsic = torch.eye(3, 3)[None, None].repeat(pred_extrinsic.shape[0], pred_extrinsic.shape[1], 1, 1).clone().to(pred_extrinsic.device)
-    #         pred_intrinsic[:, :, 0, 0] = pred_focal_lengths[:, :, 0] / 2 * width
-    #         pred_intrinsic[:, :, 1, 1] = pred_focal_lengths[:, :, 1] / 2 * height
-    #         pred_intrinsic[:, :, 0, 2] = pred_principal_points[:, :, 0] * width * 0.5
-    #         pred_intrinsic[:, :, 1, 2] = pred_principal_points[:, :, 1] * height * 0.5
-    #         del output.ray
-    #         del output.ray_conf
-    #         output.extrinsics = pred_extrinsic
-    #         output.intrinsics = pred_intrinsic
-    #     return output
-
-    # def _process_depth_head(
-    #     self, feats: list[torch.Tensor], H: int, W: int
-    # ) -> Dict[str, torch.Tensor]:
-    #     """Process features through the depth prediction head."""
-    #     return self.head(feats, H, W, patch_start_idx=0)
     
-    def _process_flow_head(
-            self, feats: list[torch.Tensor], H: int, W: int, output: Dict[str, torch.Tensor]
+    def _process_raft_head(
+        self, output: Dict[str, torch.Tensor]
     ) -> Dict[str, torch.Tensor]:
-        """
-        Process features through the flow prediction head.
-        feats: Layers of (feats, cam_token), where feats is (B,S,N,C) and cam_token is (B,S,C)
-        """
-        paired_feats = []
-        for feat in feats:
-            feat1 = feat[0][:, :-1]  # (B, S-1, N, C)
-            feat2 = feat[0][:, 1:]   # (B, S-1, N, C)
-            feat_pair = torch.cat([feat1, feat2], dim=-1)  # (B, S-1, N, 2C)
-            # Camera tokens must match the paired temporal dimension (S-1).
-            # Use camera token for the 'first' frame in each pair to align with feat1.
-            cam_token_paired = feat[1][:, :-1]  # (B, S-1, C)
-            paired_feats.append((feat_pair.detach(), cam_token_paired.detach()))
+        """Process feature maps through custom raft variant"""
 
-        flow_init = self.flow_head(paired_feats, H, W, patch_start_idx=0)
+        if "fmap" in output and "cnet" in output:
+            fmap = output.pop("fmap").detach()
+            cnet   = output.pop("cnet").detach()
 
-        #TODO add RAFT
-        
-        output.flow = flow_init
+            # feat0 = torch.cat(
+            #     [depth_fmap[:, :-1], ray_fmap[:, :-1]], dim=2
+            # ).flatten(0,1).detach()
+
+            # feat1 = torch.cat(
+            #     [depth_fmap[:, 1:], ray_fmap[:, 1:]], dim=2
+            # ).flatten(0,1).detach()
+
+            # del depth_fmap, ray_fmap
+            # torch.cuda.empty_cache()
+            """
+            SEA-RAFT Implementation (Copy from Official Repo)
+            """
+            flow_out = self.raft_head(fmap, cnet)
+
+            output.flow = flow_out["preds"]
+            output.flow_info = flow_out["infos"]
 
         return output
+
+    def _process_mono_sky_estimation(
+        self, output: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """Process mono sky estimation."""
+        if "sky" not in output:
+            return output
+        non_sky_mask = compute_sky_mask(output.sky, threshold=0.3)
+        if non_sky_mask.sum() <= 10:
+            return output
+        if (~non_sky_mask).sum() <= 10:
+            return output
+        
+        non_sky_depth = output.depth[non_sky_mask]
+        if non_sky_depth.numel() > 100000:
+            idx = torch.randint(0, non_sky_depth.numel(), (100000,), device=non_sky_depth.device)
+            sampled_depth = non_sky_depth[idx]
+        else:
+            sampled_depth = non_sky_depth
+        non_sky_max = torch.quantile(sampled_depth, 0.99)
+
+        # Set sky regions to maximum depth and high confidence
+        output.depth, _ = set_sky_regions_to_max_depth(
+            output.depth, None, non_sky_mask, max_depth=non_sky_max
+        )
+        return output
+
+    def _process_ray_pose_estimation(
+        self, output: Dict[str, torch.Tensor], height: int, width: int
+    ) -> Dict[str, torch.Tensor]:
+        """Process ray pose estimation if ray pose decoder is available."""
+        if "ray" in output and "ray_conf" in output:
+            pred_extrinsic, pred_focal_lengths, pred_principal_points = get_extrinsic_from_camray(
+                output.ray,
+                output.ray_conf,
+                output.ray.shape[-3],
+                output.ray.shape[-2],
+            )
+            pred_extrinsic = affine_inverse(pred_extrinsic) # w2c -> c2w
+            pred_extrinsic = pred_extrinsic[:, :, :3, :]
+            pred_intrinsic = torch.eye(3, 3)[None, None].repeat(pred_extrinsic.shape[0], pred_extrinsic.shape[1], 1, 1).clone().to(pred_extrinsic.device)
+            pred_intrinsic[:, :, 0, 0] = pred_focal_lengths[:, :, 0] / 2 * width
+            pred_intrinsic[:, :, 1, 1] = pred_focal_lengths[:, :, 1] / 2 * height
+            pred_intrinsic[:, :, 0, 2] = pred_principal_points[:, :, 0] * width * 0.5
+            pred_intrinsic[:, :, 1, 2] = pred_principal_points[:, :, 1] * height * 0.5
+            del output.ray
+            del output.ray_conf
+            output.extrinsics = pred_extrinsic
+            output.intrinsics = pred_intrinsic
+        return output
+
+    def _process_depth_head(
+        self, feats: list[torch.Tensor], H: int, W: int
+    ) -> Dict[str, torch.Tensor]:
+        """Process features through the depth prediction head."""
+        return self.head(feats, H, W, patch_start_idx=0)
+    
+    # def _process_flow_head(
+    #         self, feats: list[torch.Tensor], H: int, W: int, output: Dict[str, torch.Tensor]
+    # ) -> Dict[str, torch.Tensor]:
+    #     """
+    #     Process features through the flow prediction head.
+    #     feats: Layers of (feats, cam_token), where feats is (B,S,N,C) and cam_token is (B,S,C)
+    #     """
+    #     paired_feats = []
+    #     for feat in feats:
+    #         feat1 = feat[0][:, :-1]  # (B, S-1, N, C)
+    #         feat2 = feat[0][:, 1:]   # (B, S-1, N, C)
+    #         feat_pair = torch.cat([feat1, feat2], dim=-1)  # (B, S-1, N, 2C)
+    #         # Camera tokens must match the paired temporal dimension (S-1).
+    #         # Use camera token for the 'first' frame in each pair to align with feat1.
+    #         cam_token_paired = feat[1][:, :-1]  # (B, S-1, C)
+    #         paired_feats.append((feat_pair.detach(), cam_token_paired.detach()))
+
+    #     flow_init = self.flow_head(paired_feats, H, W, patch_start_idx=0)
+
+    #     #TODO add RAFT
+        
+    #     output.flow = flow_init
+
+    #     return output
 
 
     def _process_camera_estimation(

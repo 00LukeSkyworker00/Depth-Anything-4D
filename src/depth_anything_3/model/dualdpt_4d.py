@@ -214,11 +214,13 @@ class DualDPT(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         B, _, C = feats[0].shape
         ph, pw = H // self.patch_size, W // self.patch_size
+        raw_feats = []
         resized_feats = []
         for stage_idx, take_idx in enumerate(self.intermediate_layer_idx):
             x = feats[take_idx][:, patch_start_idx:]
             x = self.norm(x)
             x = x.permute(0, 2, 1).reshape(B, C, ph, pw)  # [B*S, C, ph, pw]
+            raw_feats.append(x)
 
             x = self.projects[stage_idx](x)
             if self.pos_embed:
@@ -228,16 +230,26 @@ class DualDPT(nn.Module):
 
         # 2) Fuse pyramid (main & aux are completely independent)
         fused_main, fused_aux_pyr = self._fuse(resized_feats)
+        last_aux = fused_aux_pyr[-1]
 
-        # 3) Upsample to target resolution and (optional) add pos-embed again
-        h_out = int(ph * self.patch_size / self.down_ratio)
-        w_out = int(pw * self.patch_size / self.down_ratio)
+        # # 3) Upsample to target resolution and (optional) add pos-embed again
+        # h_out = int(ph * self.patch_size / self.down_ratio)
+        # w_out = int(pw * self.patch_size / self.down_ratio)
 
-        fused_main = custom_interpolate(
-            fused_main, (h_out, w_out), mode="bilinear", align_corners=True
-        )
+        # fused_main = custom_interpolate(
+        #     fused_main, (h_out, w_out), mode="bilinear", align_corners=True
+        # )
+        # last_aux = custom_interpolate(
+        #     last_aux, (h_out, w_out), mode="bilinear", align_corners=True
+        # )
         if self.pos_embed:
             fused_main = self._add_pos_embed(fused_main, W, H)
+            last_aux = self._add_pos_embed(last_aux, W, H)
+
+        return {
+            "fmap": torch.cat(raw_feats, dim=1),
+            "cnet": torch.cat([fused_main, last_aux], dim=1) # (B*S, 256*2, H, W)
+        }
 
         # Primary head: conv1 -> conv2 -> activate
         # fused_main = self.scratch.output_conv1(fused_main)
@@ -279,7 +291,7 @@ class DualDPT(nn.Module):
         """
         l1, l2, l3, l4 = feats
 
-        l1_rn = self.scratch.layer1_rn(l1)
+        # l1_rn = self.scratch.layer1_rn(l1)
         l2_rn = self.scratch.layer2_rn(l2)
         l3_rn = self.scratch.layer3_rn(l3)
         l4_rn = self.scratch.layer4_rn(l4)
@@ -291,25 +303,25 @@ class DualDPT(nn.Module):
         if self.aux_levels >= 4:
             aux_list.append(aux_out)
 
-        # level 3 -> 2
-        out = self.scratch.refinenet3(out, l3_rn, size=l2_rn.shape[2:])
-        aux_out = self.scratch.refinenet3_aux(aux_out, l3_rn, size=l2_rn.shape[2:])
-        if self.aux_levels >= 3:
-            aux_list.append(aux_out)
+        # # level 3 -> 2
+        # out = self.scratch.refinenet3(out, l3_rn, size=l2_rn.shape[2:])
+        # aux_out = self.scratch.refinenet3_aux(aux_out, l3_rn, size=l2_rn.shape[2:])
+        # if self.aux_levels >= 3:
+        #     aux_list.append(aux_out)
 
-        # level 2 -> 1
-        out = self.scratch.refinenet2(out, l2_rn, size=l1_rn.shape[2:])
-        aux_out = self.scratch.refinenet2_aux(aux_out, l2_rn, size=l1_rn.shape[2:])
-        if self.aux_levels >= 2:
-            aux_list.append(aux_out)
+        # # level 2 -> 1
+        # out = self.scratch.refinenet2(out, l2_rn, size=l1_rn.shape[2:])
+        # aux_out = self.scratch.refinenet2_aux(aux_out, l2_rn, size=l1_rn.shape[2:])
+        # if self.aux_levels >= 2:
+        #     aux_list.append(aux_out)
 
-        # level 1 (final)
-        out = self.scratch.refinenet1(out, l1_rn)
-        aux_out = self.scratch.refinenet1_aux(aux_out, l1_rn)
-        aux_list.append(aux_out)
+        # # level 1 (final)
+        # out = self.scratch.refinenet1(out, l1_rn)
+        # aux_out = self.scratch.refinenet1_aux(aux_out, l1_rn)
+        # aux_list.append(aux_out)
 
-        out = self.scratch.output_conv1(out)
-        aux_list = [self.scratch.output_conv1_aux[i](aux) for i, aux in enumerate(aux_list)]
+        # out = self.scratch.output_conv1(out)
+        # aux_list = [self.scratch.output_conv1_aux[i](aux) for i, aux in enumerate(aux_list)]
 
         return out, aux_list
 

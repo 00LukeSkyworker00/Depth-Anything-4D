@@ -18,7 +18,7 @@ net:
 
 head:
   __object__:
-    path: depth_anything_3.model.dualdpt
+    path: depth_anything_3.model.dualdpt_4d
     name: DualDPT
     args: as_params
 
@@ -44,15 +44,33 @@ cam_dec:
 
   dim_in: 2048
 
-flow_head:
+# flow_head:
+#   __object__:
+#     path: depth_anything_3.model.flowdpt
+#     name: FlowDPT
+#     args: as_params
+
+#   dim_in: 4096
+#   output_dim: 2
+#   features: *head_features
+#   out_channels: *head_out_channels
+#   activation: linear
+#   use_image_context: false
+
+raft_head:
   __object__:
-    path: depth_anything_3.model.flowdpt
-    name: FlowDPT
+    path: depth_anything_3.model.sea_raft
+    name: RAFT
     args: as_params
 
-  dim_in: 4096
-  output_dim: 2
-  features: *head_features
-  out_channels: *head_out_channels
-  activation: linear
-  use_image_context: false
+  args:
+    radius: 4
+    dim: 512
+    num_blocks: 2
+    iters: 4
+    use_var: true
+    var_min: 0
+    var_max: 10
+    # pretrain: "resnet34"
+    # initial_dim: 64
+    # block_dims: [64, 128, 256]

@@ -1,3 +1,4 @@
+import math
 import argparse, os
 import numpy as np
 import psutil
@@ -84,16 +85,16 @@ def Trainer(rank, args):
             return
         loss_list = torch.stack(losses, dim=0).to(device).mean(dim=0).cpu() # (N,)
         loss = loss_list[0].item()
-        epe = loss_list[1].item()
-        smooth = loss_list[2].item()
+        # epe = loss_list[1].item()
+        # smooth = loss_list[2].item()
         writer.add_scalar(f'{mode}/Total Loss', loss, epoch)
-        writer.add_scalar(f'{mode}/EPE', epe, epoch)
-        writer.add_scalar(f'{mode}/Smoothness', smooth, epoch)
+        # writer.add_scalar(f'{mode}/EPE', epe, epoch)
+        # writer.add_scalar(f'{mode}/Smoothness', smooth, epoch)
 
         print(f'==== {mode} Result ====')
         print(f'{"Total Loss":<15}: {loss:12.3e}')
-        print(f'{"EPE":<15}: {epe:12.3e}')
-        print(f'{"Smoothness Loss":<15}: {smooth:12.3e}')
+        # print(f'{"EPE":<15}: {epe:12.3e}')
+        # print(f'{"Smoothness Loss":<15}: {smooth:12.3e}')
         losses.clear()
 
     def plt_lr(lr:torch.Tensor, step:int):
@@ -217,6 +218,66 @@ def Trainer(rank, args):
         if is_main_rank:
             record_loss([loss.detach(), epe.detach(), smooth.detach()])
         return loss
+    
+    # exclude extremly large displacements
+    MAX_FLOW = 400
+    # SUM_FREQ = 100
+    # VAL_FREQ = 5000
+
+    def sequence_loss(output, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, isVal=False):
+        """ Loss function defined over sequence of flow predictions """
+        flow_pred = output.flow
+        info_pred = output.flow_info
+        n_predictions = len(flow_pred)
+        flow_gt = torch.nan_to_num(flow_gt, nan=0.0)
+        nf = nf_pred(flow_pred, info_pred, flow_gt.flatten(0,1))
+        flow_loss = 0.0
+        # exlude invalid pixels and extremely large diplacements
+        mag = torch.sum(flow_gt**2, dim=1).sqrt()
+        valid = (mag < max_flow)
+        # valid = (valid >= 0.5) & (mag < max_flow)
+        for i in range(n_predictions):
+            i_weight = gamma ** (n_predictions - i - 1)
+            loss_i = nf[i]
+            final_mask = (~torch.isnan(loss_i.detach())) & (~torch.isinf(loss_i.detach())) & valid[:, None]
+            flow_loss += i_weight * ((final_mask * loss_i).sum() / final_mask.sum())        
+
+        if isVal:
+            # Sync across ranks for logging
+            flow_loss = reduce_loss(flow_loss)
+
+        if is_main_rank:
+            record_loss([flow_loss.detach()])
+
+        return flow_loss
+    
+    def nf_pred(flow_predictions, info_predictions, flow_gt):
+        # exlude invalid pixels and extremely large diplacements
+        nf_predictions = []
+        use_var = True
+        var_min = 0
+        var_max = 10
+        for i in range(len(info_predictions)):
+            if not use_var:
+                var_max = var_min = 0
+            else:
+                var_max = var_max
+                var_min = var_min
+                
+            raw_b = info_predictions[i][:, 2:]
+            log_b = torch.zeros_like(raw_b)
+            weight = info_predictions[i][:, :2]
+            # Large b Component                
+            log_b[:, 0] = torch.clamp(raw_b[:, 0], min=0, max=var_max)
+            # Small b Component
+            log_b[:, 1] = torch.clamp(raw_b[:, 1], min=var_min, max=0)
+            # term2: [N, 2, m, H, W]
+            term2 = ((flow_gt - flow_predictions[i]).abs().unsqueeze(2)) * (torch.exp(-log_b).unsqueeze(1))
+            # term1: [N, m, H, W]
+            term1 = weight - math.log(2) - log_b
+            nf_loss = torch.logsumexp(weight, dim=1, keepdim=True) - torch.logsumexp(term1.unsqueeze(1) - term2, dim=2)
+            nf_predictions.append(nf_loss)
+        return nf_predictions
 
     # Start Training
 
@@ -238,8 +299,10 @@ def Trainer(rank, args):
         )
 
         # Compute flow loss
-        pred_flow = out.flow['opticflow']  # (B, S-1, 2, H, W)
-        loss = compute_loss(pred_flow=pred_flow, gt_flow=flow2d, img=img)
+        # loss = compute_loss(pred_flow=pred_flow, gt_flow=flow2d, img=img)
+        pred_flow = out.flow[-1]
+        valid = torch.ones_like(pred_flow, device=device)
+        loss = sequence_loss(out, flow2d, valid, isVal=isVal)
         
         if not isVal:
             # Backward pass and optimizer step
@@ -251,7 +314,7 @@ def Trainer(rank, args):
 
         return (
             img[0,0].permute(1,2,0).detach().cpu().numpy(),
-            pred_flow[0,0].permute(1,2,0).detach().cpu().numpy(),
+            pred_flow[0].permute(1,2,0).detach().cpu().numpy(),
             flow2d[0,0].permute(1,2,0).detach().cpu().numpy(),
         )
 
@@ -303,9 +366,10 @@ def main():
     parser = argparse.ArgumentParser()
     # Directory configuration
     parser.add_argument(
-        "--model-dir",
-        default="depth-anything/DA3-LARGE-1.1",
-        help="Path to model directory for Huggingface",
+        "--model",
+        default="large",
+        choices=["giant_large", "giant", "large"],
+        help="Type of model on Huggingface",
     )
     parser.add_argument(
         "--data-dir",
@@ -320,13 +384,13 @@ def main():
 
     # Training hyperparameters
     parser.add_argument("--seed", type=int, default=0, help="Seed for reproducibility")
-    parser.add_argument("--batch", type=int, default=6, help="Total batch size")
+    parser.add_argument("--batch", type=int, default=3, help="Total batch size")
     parser.add_argument("--num-worker", type=int, default=-1, help="Number of workers per rank, -1 for automatic detection.")
     parser.add_argument("--epoch", type=int, default=100, help="Total epochs for training")
     parser.add_argument("--max-steps", type=int, default=5000, help="Max iterations")
     parser.add_argument("--max-lr", type=float, default=1e-5, help="Max learning rate")
-    parser.add_argument("--ep-len", type=int, default=3, help="Episode length of the input clips")
-    parser.add_argument("--custom-config", type=str, default="da3nested-giant-large-4d.yaml", help="Points to custom config file")
+    parser.add_argument("--ep-len", type=int, default=4, help="Episode length of the input clips")
+    # parser.add_argument("--custom-config", type=str, default="da3nested-giant-large-4d.yaml", help="Points to custom config file")
 
     # DDP setup
     parser.add_argument("--port", type=int, default=12355, help="Master port for DDP")
@@ -336,6 +400,17 @@ def main():
     parser.add_argument("--eval", action="store_true", help="Evaluate model only")
 
     args = parser.parse_args()
+
+    model_pth = {
+        "giant_large": ("depth-anything/DA3NESTED-GIANT-LARGE-1.1", "da3nested-giant-large-4d.yaml"),
+        "giant": ("depth-anything/DA3-GIANT-1.1", "da3-giant-4d.yaml"),
+        "large": ("depth-anything/DA3-LARGE-1.1", "da3-large-4d.yaml"),
+        # "base": "depth-anything/DA3-BASE",
+        # "small": "depth-anything/DA3-SMALL",
+    }
+
+    args.model_dir = model_pth[args.model][0]
+    args.custom_config = model_pth[args.model][1]
 
     # Set random seed for reproducibility
     set_rnd_seed(args.seed)

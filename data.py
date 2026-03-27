@@ -125,29 +125,30 @@ class SpringDataset(Dataset):
             )
 
         #TODO: convert disparity to depth.
-        disparity = []
+        # disparity = []
         # scene_flow = []
         optical_flow = []
         # for disp, scene, optic in zip(chunk.disp1, chunk.disp2, chunk.flow):
-        for disp, optic in zip(chunk.disp1, chunk.flow):
-            disparity.append(torch.from_numpy(readDsp5Disp(disp)))
+        # for disp, optic in zip(chunk.disp1, chunk.flow):
+        for optic in chunk.flow:
+            # disparity.append(torch.from_numpy(readDsp5Disp(disp)))
             # scene_flow.append(torch.from_numpy(readDsp5Disp(scene)))
             optical_flow.append(torch.from_numpy(readFlo5Flow(optic)))
-        disparity.append(torch.from_numpy(readDsp5Disp(chunk.disp1[-1])))
+        # disparity.append(torch.from_numpy(readDsp5Disp(chunk.disp1[-1])))
 
-        disparity = torch.stack(disparity)
+        # disparity = torch.stack(disparity)
         # scene_flow = torch.stack(scene_flow)
         optical_flow = torch.stack(optical_flow)
 
-        disparity = disparity.unsqueeze(1)
+        # disparity = disparity.unsqueeze(1)
         # scene_flow = scene_flow.unsqueeze(1)
-        optical_flow = resize_flow(optical_flow.permute(0,3,1,2), imgs_cpu.shape[2], imgs_cpu.shape[3])
+        optical_flow = resize_flow(optical_flow.permute(0,3,1,2), 288, 512)
 
         return {
             'img': imgs_cpu, # (s,c,h,w)
             'ixts': intrinsics,
             'exts': extrinsics,
-            'disp': disparity, # (s,c,h,w)
+            # 'disp': disparity, # (s,c,h,w)
             # 'flow3d': scene_flow, # (s,c,h,w)
             'flow2d':optical_flow, # (s,c,h,w)
         }
