@@ -18,7 +18,7 @@ net:
 
 head:
   __object__:
-    path: depth_anything_3.model.dualdpt_4d
+    path: depth_anything_3.model.dualdpt
     name: DualDPT
     args: as_params
 
@@ -74,3 +74,13 @@ raft_head:
     # pretrain: "resnet34"
     # initial_dim: 64
     # block_dims: [64, 128, 256]
+
+scene_head:
+  __object__:
+    path: depth_anything_3.model.scene_dec
+    name: SceneDecoder
+    args: as_params
+
+  dim_in: *head_dim_in
+  hid_dim: 512
+  num_pt_per_view: 500

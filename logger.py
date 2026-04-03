@@ -1,130 +1,124 @@
 
-from datetime import time
+import time
 import os
 import numpy as np
+from collections import Counter
 
 import torch
+import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 
-class Logger():
-    def __init__(self, args, device):
-        self.writer = SummaryWriter(os.path.join(args.output_dir, 'logs'))
+class LoggerBase():
+    def __init__(self, args, device, train_ds, val_ds):
+        pass
+
+    def timed_print(self, prefix_msg:str):
+        pass
+
+    def load_best(self, best_loss):
+        pass
+
+    def save_best(self):
+        pass
+
+    def plt_lr(self, lr:torch.Tensor, step:int):
+        pass
+
+    def record_loss(self, d: dict[str, float]):
+        pass
+
+    def plt_loss(self, epoch:int, mode='Train') -> bool:
+        pass
+    
+    def log_viz(self, model, epoch, mode='Train'):
+        pass
+
+    def save_model(self, model:nn.Module, optimizer:torch.optim.Optimizer, epoch):
+        pass
+
+class Logger(LoggerBase):
+    def __init__(self, args, device, train_ds, val_ds):
+        self.writer = SummaryWriter(os.path.join(args.out_dir, 'logs'))
         self.device = device
-        os.makedirs(self.export_dir, exist_ok=True)
+        self.ckpt_pth = args.ckpt_pth
+
+        self.train_vis = next(iter(train_ds))
+        self.val_vis = next(iter(val_ds))
 
         self.start_time = time.time()
-
-        self.loss_names = []
-        self.loss_list = []
-
         self.best_loss = float('inf')
-        self.best_ari = 0
-        self.best_arifg = 0
+        self.has_best = False
 
-        self.ari = []
-        self.ari_fg = []
+        self.loss_dict = Counter()
+        self.sample_count = 0
 
     def timed_print(self, prefix_msg:str):
         now = time.time()
         duration = now - self.start_time
         print(f"{prefix_msg}| Time: {duration:.2f}s")
 
-    def load_best(self, best_score):
-        self.best_loss = best_score[0]
-        self.best_ari = best_score[1]
-        self.best_arifg = best_score[2]
-
-    def save_best(self):
-        return (self.best_loss, self.best_ari, self.best_arifg)
-
     def plt_lr(self, lr:torch.Tensor, step:int):
         self.writer.add_scalars('Learn Rate', {'value': lr[0]}, step)
 
-    def record_loss(self, loss_list:torch.Tensor):
-        """
-        loss_list: [N,]
-        """
-        self.loss_list.append(loss_list.unsqueeze(-1).detach().cpu())
+    def record_loss(self, d: dict[str, float]):
+        self.loss_dict.update(d)
+        self.sample_count += 1
 
     def plt_loss(self, epoch:int, mode='Train') -> bool:
-        assert mode in ['Train', 'Val']  
-
-        loss_list = self.caculate_mean(self.loss_list) # [N,]
-
-        result = {}
-        total_loss = loss_list.sum().item()
-        result['total'] = total_loss
-        for i, name in zip(loss_list, self.loss_names):
-            # print(name,i)
-            result[name] = i.item()
-
-        isBest = False
-        if mode == 'Val' and self.best_loss > total_loss:
-            self.best_loss = total_loss
-            isBest = True
-
-        
-        self.writer.add_scalars(f'{mode} Loss', result, epoch)
-
-        self.timed_print(f"{mode} Loss: {total_loss}")
-        
-        self.loss_list = []
-
-        return isBest
-
-    # def record_metrics(self, ari, ari_fg):
-    #     self.ari.append(ari.detach().cpu())
-    #     self.ari_fg.append(ari_fg.detach().cpu())
-
-    # def plt_metrics(self, epoch) -> tuple[bool,bool]:
-    #     ari = self.caculate_mean(self.ari)
-    #     ari_fg = self.caculate_mean(self.ari_fg)
-
-    #     self.writer.add_scalars('Metrics', {
-    #         'ARI': ari,
-    #         'ARI-FG': ari_fg,
-    #     }, epoch)
-
-    #     isBestAri = False
-    #     isBestArifg = False
-
-    #     if self.best_ari < ari:
-    #         self.best_ari = ari
-    #         isBestAri = True
-    #     if self.best_arifg < ari_fg:
-    #         self.best_arifg = ari_fg
-    #         isBestArifg = True
-
-    #     self.ari = []
-    #     self.ari_fg = []
-        
-    #     return isBestAri, isBestArifg
+        assert mode in ['Train', 'Val']
+        if len(self.loss_dict) == 0:
+            return
+        total_loss = 0
+        if mode=='Val':
+            print(f'==== {mode} Loss ====')
+        for key, loss in self.loss_dict.items():
+            mean_loss = loss / self.sample_count
+            self.writer.add_scalar(f'{mode}/{key} loss', mean_loss, epoch)
+            if mode=='Val':
+                print(f'{key:<15} loss: { mean_loss:12.3e}')
+            total_loss += mean_loss
+        self.writer.add_scalar(f'{mode}/total loss', mean_loss, epoch)
+        if mode=='Val':
+            print(f'{"total":<15} loss: { total_loss:12.3e}')
+            if self.best_loss > total_loss:
+                self.best_loss = total_loss
+                self.has_best = True
+        self.sample_count = 0
+        self.loss_dict.clear()
     
-    def print_eval(self):
+    def log_viz(self, model:nn.Module, epoch, mode='Train'):
+        # Visualize and save results
+        if mode=='Train':
+            x = self.train_vis['img'][:1].to(self.device)
+        else:
+            x = self.val_vis['img'][:1].to(self.device)
 
-        total_loss = self.caculate_mean(self.total_loss)
-        p_loss = self.caculate_mean(self.p_loss)
-        c_loss = self.caculate_mean(self.c_loss)
-        ari = self.caculate_mean(self.ari)
-        ari_fg = self.caculate_mean(self.ari_fg)
-        
-        self.total_loss = []
-        self.p_loss = []
-        self.c_loss = []
-        self.ari = []
-        self.ari_fg = []
+        out = model(
+            image=x, extrinsics=None, intrinsics=None,
+            export_feat_layers=[], infer_gs=False,
+            use_ray_pose=False, ref_view_strategy="saddle_balanced"
+        )
+        img = x[0].detach()
+        img = (img - img.min()) / (img.max() - img.min() + 1e-8)
+        gs_render = out.gs_render[0][0].detach()
+        depth = out.depth[0].unsqueeze(-3).repeat(1,3,1,1).detach()
+        depth_render = out.gs_render[1][0].unsqueeze(-3).repeat(1,3,1,1).detach()
+        vid = torch.stack([img, gs_render,depth,depth_render])
+        self.writer.add_video(f'{mode}/Visualization',vid, epoch)
 
-        print('==== Eval Result ====')
-        print(f'{"Total Loss":<15}: {total_loss:12.3e}')
-        print(f'{"Position Loss":<15}: {p_loss:12.3e}')
-        print(f'{"Color Loss":<15}: {c_loss:12.3e}')
-        print(f'{"ARI":<15}: {ari:12.1%}')
-        print(f'{"ARI-FG":<15}: {ari_fg:12.1%}')
+    def save_model(self, model:nn.Module, optimizer:torch.optim.Optimizer, epoch):
+        last = {
+            'model': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'epoch':epoch,
+            'best_loss':self.best_loss
+        }
+        torch.save(last, os.path.join(self.ckpt_pth,'last.pt'))
+        if self.has_best:
+            torch.save(model.state_dict(),os.path.join(self.ckpt_pth,'best.pt'))
+            self.has_best = False
     
-    def caculate_mean(self,stack:list[torch.Tensor]):
-        return torch.cat(stack,dim=-1).to(self.device).mean(dim=-1).cpu()
-
 def print_vram(device, msg=""):
     """
     Print the current VRAM usage of the specified device.

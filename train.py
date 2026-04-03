@@ -3,7 +3,7 @@ import argparse, os
 import numpy as np
 import psutil
 from tqdm import tqdm
-import socket, shutil, glob
+import socket, shutil, glob, random
 from datetime import datetime
 import flow_vis
 
@@ -12,15 +12,16 @@ import torch.optim as optim
 import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.nn import DataParallel as DP
 from torch.distributed import init_process_group, destroy_process_group
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 
-from torch.utils.tensorboard import SummaryWriter
+# from dataset.spring import SpringDataset
+# from dataset.mip_nerf_360 import MipNerf360
+from dataset.real_estate_10k_256 import RealEstate10K256
 
-import matplotlib.pyplot as plt
-
-from data import SpringDataset
+from logger import Logger, LoggerBase
 
 from model import DepthAnything3
 
@@ -28,6 +29,7 @@ def vram() -> str:
     return f"alloc={torch.cuda.memory_allocated()/1e9:.2f}GB | reserved={torch.cuda.memory_reserved()/1e9:.2f}GB"
 
 def set_rnd_seed(seed:int):
+    random.seed(seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
 
@@ -73,39 +75,12 @@ def Trainer(rank, args):
     torch.cuda.set_device(rank)
     device = torch.device(f"cuda:{rank}")
 
-    # Setup logger
-    writer = SummaryWriter(os.path.join(args.out_dir, 'logs'))
-    losses = []
-    def record_loss(loss_list:list[float]):
-        losses.append(torch.tensor(loss_list)) # (N )
-
-    def plt_loss(epoch:int, mode='Train'):
-        assert mode in ['Train', 'Val']
-        if len(losses) == 0:
-            return
-        loss_list = torch.stack(losses, dim=0).to(device).mean(dim=0).cpu() # (N,)
-        loss = loss_list[0].item()
-        # epe = loss_list[1].item()
-        # smooth = loss_list[2].item()
-        writer.add_scalar(f'{mode}/Total Loss', loss, epoch)
-        # writer.add_scalar(f'{mode}/EPE', epe, epoch)
-        # writer.add_scalar(f'{mode}/Smoothness', smooth, epoch)
-
-        print(f'==== {mode} Result ====')
-        print(f'{"Total Loss":<15}: {loss:12.3e}')
-        # print(f'{"EPE":<15}: {epe:12.3e}')
-        # print(f'{"Smoothness Loss":<15}: {smooth:12.3e}')
-        losses.clear()
-
-    def plt_lr(lr:torch.Tensor, step:int):
-        writer.add_scalars('Learn Rate', {'value': lr[0]}, step)
-
     def logger_print(msg:str):
         if is_main_rank:
             print(msg)
-
+    
     # Initialize process group for DDP
-    init_process_group(backend='nccl', rank=rank, world_size=args.world_size)
+    init_process_group(backend='gloo', rank=rank, world_size=args.world_size)
     torch.set_printoptions(precision=10) 
 
     # Set number of workers
@@ -127,7 +102,7 @@ def Trainer(rank, args):
 
     # Create dataloader
     def init_dataloader(data_glob:str, isVal:bool):
-        dataset = SpringDataset(root=data_glob, isVal=isVal, ep_len=args.ep_len)
+        dataset = RealEstate10K256(root=data_glob, isVal=isVal, ep_len=args.ep_len)
         shuffle = not isVal
         
         sampler = None
@@ -140,10 +115,15 @@ def Trainer(rank, args):
             dataset=dataset, sampler=sampler, batch_size=args.batch, shuffle=shuffle,
             num_workers=args.num_worker, persistent_workers=True, prefetch_factor=4
         )
-    data_glob = os.path.join(args.data_dir, "train", "*")
-    train_dataloader = init_dataloader(data_glob, isVal=False)
-    val_dataloader = init_dataloader(data_glob, isVal=True)
-    logger_print(f"[Dataloader] Train: {len(train_dataloader)} sets | Val: {len(val_dataloader)} sets")
+    train_dataloader = init_dataloader(args.data_dir, isVal=False)
+    val_dataloader = init_dataloader(args.data_dir, isVal=True)
+    logger_print(f"[Dataloader] Train: {len(train_dataloader)} iters | Val: {len(val_dataloader)} iters")
+
+    # Setup logger
+    if is_main_rank:
+        logger = Logger(args, device, train_dataloader, val_dataloader)
+    else:
+        logger = LoggerBase(args, device, train_dataloader, val_dataloader)
 
     # Create optimizer
     params = [{'params': model.parameters()}]
@@ -165,144 +145,31 @@ def Trainer(rank, args):
     if is_main_rank:
         save_env(args.out_dir)
     logger_print(f"Training scripts backup to folder.")
-
-    # Define loss fn
-    def epe_loss(pred_flow, gt_flow, mask=None):
-        diff = pred_flow - gt_flow
-        epe = torch.sqrt((diff ** 2).sum(dim=2) + 1e-8)  # sum over 2 flow channels (u,v)
-        if mask is not None:
-            epe = epe * mask
-            return epe.sum() / (mask.sum() + 1e-8)
-        return epe.mean()
-    
-    def smoothness_loss(pred_flow, img):
-        # pred_flow: (B, S-1, 2, H, W) - paired frames
-        # img: (B, S, 3, H, W) - original frames
-        # Match temporal dimensions: use first S-1 frames of img to align with flow
-        img = img[:, :-1, :, :, :]  # (B, S-1, 3, H, W)
-        # Compute spatial gradients: dx (horizontal), dy (vertical)
-        dx = torch.abs(pred_flow[:, :, :, :, :-1] - pred_flow[:, :, :, :, 1:])  # (B,S-1,2,H,W-1)
-        dy = torch.abs(pred_flow[:, :, :, :-1, :] - pred_flow[:, :, :, 1:, :])  # (B,S-1,2,H-1,W)
-        # Compute image-based weights by averaging over RGB channels (dim=2)
-        img_dx = torch.abs(img[:, :, :, :, :-1] - img[:, :, :, :, 1:])  # (B,S-1,3,H,W-1)
-        img_dy = torch.abs(img[:, :, :, :-1, :] - img[:, :, :, 1:, :])  # (B,S-1,3,H-1,W)
-        weights_x = torch.exp(-img_dx.mean(dim=2, keepdim=True))  # (B,S-1,1,H,W-1)
-        weights_y = torch.exp(-img_dy.mean(dim=2, keepdim=True))  # (B,S-1,1,H-1,W)
-        return (dx * weights_x).mean() + (dy * weights_y).mean()
-    
+ 
     def reduce_loss(loss_tensor):
         if dist.is_available() and dist.is_initialized():
             dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
             loss_tensor /= dist.get_world_size()
         return loss_tensor
 
-    def compute_loss(pred_flow, gt_flow, img, λ=0.05, mask=None, isVal=False):
-        # Create mask from gt_flow to exclude NaN/invalid regions
-        if mask is None:
-            # Mask is 1 where flow is valid (not NaN), 0 where invalid
-            valid_mask = ~torch.isnan(gt_flow).any(dim=2, keepdim=False)  # (B, S-1, H, W)
-            mask = valid_mask.float()
-        
-        # Replace NaN in gt_flow with 0 to prevent NaN propagation
-        gt_flow = torch.nan_to_num(gt_flow, nan=0.0)
-        # print(f"Pred Flow: {pred_flow.shape}, GT Flow: {gt_flow.shape}, Mask: {mask.shape}")
-        epe = epe_loss(pred_flow, gt_flow, mask)
-        smooth = smoothness_loss(pred_flow, img)
-
-        if isVal:
-            # Sync across ranks for logging
-            epe = reduce_loss(epe)
-            smooth = reduce_loss(smooth)
-
-        loss = epe + λ * smooth
-        if is_main_rank:
-            record_loss([loss.detach(), epe.detach(), smooth.detach()])
-        return loss
-    
-    # exclude extremly large displacements
-    MAX_FLOW = 400
-    # SUM_FREQ = 100
-    # VAL_FREQ = 5000
-
-    def sequence_loss(output, flow_gt, valid, gamma=0.8, max_flow=MAX_FLOW, isVal=False):
-        """ Loss function defined over sequence of flow predictions """
-        flow_pred = output.flow
-        info_pred = output.flow_info
-        n_predictions = len(flow_pred)
-        flow_gt = torch.nan_to_num(flow_gt, nan=0.0)
-        nf = nf_pred(flow_pred, info_pred, flow_gt.flatten(0,1))
-        flow_loss = 0.0
-        # exlude invalid pixels and extremely large diplacements
-        mag = torch.sum(flow_gt**2, dim=1).sqrt()
-        valid = (mag < max_flow)
-        # valid = (valid >= 0.5) & (mag < max_flow)
-        for i in range(n_predictions):
-            i_weight = gamma ** (n_predictions - i - 1)
-            loss_i = nf[i]
-            final_mask = (~torch.isnan(loss_i.detach())) & (~torch.isinf(loss_i.detach())) & valid[:, None]
-            flow_loss += i_weight * ((final_mask * loss_i).sum() / final_mask.sum())        
-
-        if isVal:
-            # Sync across ranks for logging
-            flow_loss = reduce_loss(flow_loss)
-
-        if is_main_rank:
-            record_loss([flow_loss.detach()])
-
-        return flow_loss
-    
-    def nf_pred(flow_predictions, info_predictions, flow_gt):
-        # exlude invalid pixels and extremely large diplacements
-        nf_predictions = []
-        use_var = True
-        var_min = 0
-        var_max = 10
-        for i in range(len(info_predictions)):
-            if not use_var:
-                var_max = var_min = 0
-            else:
-                var_max = var_max
-                var_min = var_min
-                
-            raw_b = info_predictions[i][:, 2:]
-            log_b = torch.zeros_like(raw_b)
-            weight = info_predictions[i][:, :2]
-            # Large b Component                
-            log_b[:, 0] = torch.clamp(raw_b[:, 0], min=0, max=var_max)
-            # Small b Component
-            log_b[:, 1] = torch.clamp(raw_b[:, 1], min=var_min, max=0)
-            # term2: [N, 2, m, H, W]
-            term2 = ((flow_gt - flow_predictions[i]).abs().unsqueeze(2)) * (torch.exp(-log_b).unsqueeze(1))
-            # term1: [N, m, H, W]
-            term1 = weight - math.log(2) - log_b
-            nf_loss = torch.logsumexp(weight, dim=1, keepdim=True) - torch.logsumexp(term1.unsqueeze(1) - term2, dim=2)
-            nf_predictions.append(nf_loss)
-        return nf_predictions
-
     # Start Training
-
     def step(sample, step:int, mode='train'):
         assert mode in ['train', 'val']
         isVal = (mode == 'val')
 
         # Load sample
         img = sample['img'].to(device)
-        flow2d = sample['flow2d'].to(device)  # (B, S-1, 2, H, W)
-        ixts = sample['ixts'].to(device)
-        exts = sample['exts'].to(device)
-        
+        ixts = None
+        exts = None
+
         # Run model forward
         out = model(
             image=img, extrinsics=exts, intrinsics=ixts,
             export_feat_layers=[], infer_gs=False,
             use_ray_pose=False, ref_view_strategy="saddle_balanced"
-        )
-
-        # Compute flow loss
-        # loss = compute_loss(pred_flow=pred_flow, gt_flow=flow2d, img=img)
-        pred_flow = out.flow[-1]
-        valid = torch.ones_like(pred_flow, device=device)
-        loss = sequence_loss(out, flow2d, valid, isVal=isVal)
+        )        
+        loss = out.loss
+        logger.record_loss(out.loss_dict)
         
         if not isVal:
             # Backward pass and optimizer step
@@ -310,55 +177,31 @@ def Trainer(rank, args):
             loss.backward()
             optimizer.step()
             scheduler.step()
-            plt_lr(scheduler.get_last_lr(), step)
-
-        return (
-            img[0,0].permute(1,2,0).detach().cpu().numpy(),
-            pred_flow[0].permute(1,2,0).detach().cpu().numpy(),
-            flow2d[0,0].permute(1,2,0).detach().cpu().numpy(),
-        )
-
-    def log_viz(img, pred, gt, epoch, mode='Train'):
-        if is_main_rank:
-            # Visualize and save results
-            img_vis = (img - img.min()) / (img.max() - img.min() + 1e-8)
-            # Replace NaN values in flow for visualization
-            pred = np.nan_to_num(pred, nan=0.0)
-            gt = np.nan_to_num(gt, nan=0.0)
-            flow_pred_vis = flow_vis.flow_to_color(pred, convert_to_bgr=False)
-            flow_gt_vis = flow_vis.flow_to_color(gt, convert_to_bgr=False)
-
-            fig, axs = plt.subplots(1, 3, figsize=(15, 5))
-            axs[0].imshow(img_vis)
-            axs[0].set_title('Input Image')
-            axs[0].axis('off')
-            axs[1].imshow(flow_pred_vis)
-            axs[1].set_title('Predicted Flow')
-            axs[1].axis('off')
-            axs[2].imshow(flow_gt_vis)
-            axs[2].set_title('Ground Truth Flow')
-            axs[2].axis('off')
-            plt.tight_layout()
-            writer.add_figure(f'{mode}/Visualize', fig, epoch)
-            plt.close()
+            logger.plt_lr(scheduler.get_last_lr(), step)
 
     step_counter = 0
     for i in range(total_epochs):
 
         logger_print(f"Epoch {i}")
 
+        model.train()
         train_dataloader.sampler.set_epoch(i)
         for sample in tqdm(train_dataloader, disable=not is_main_rank):
-            img, pred, gt = step(sample, step_counter, mode='train')
+            step(sample, step_counter, mode='train')
+            if step_counter % 10 == 0:
+                logger.plt_loss(step_counter, mode='Train')
+            if step_counter % 100 == 0:
+                logger.log_viz(model, step_counter, 'Train')
             step_counter += 1
-        plt_loss(i, mode='Train')
-        log_viz(img, pred, gt, i, 'Train')
 
+        model.eval()
         val_dataloader.sampler.set_epoch(i)
-        for sample in tqdm(val_dataloader, disable=not is_main_rank):
-            img, pred, gt = step(sample, step_counter, mode='val')
-        plt_loss(i, mode='Val')
-        log_viz(img, pred, gt, i, 'Val')
+        with torch.no_grad():
+            for sample in tqdm(val_dataloader, disable=not is_main_rank):
+                step(sample, step_counter, mode='val')
+        logger.plt_loss(i, mode='Val')
+        logger.log_viz(model, i, 'Val')
+        logger.save_model(model, optimizer, i)
 
     cleanup(rank)
     

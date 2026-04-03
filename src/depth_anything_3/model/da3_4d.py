@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from addict import Dict
 from omegaconf import DictConfig, OmegaConf
 
@@ -31,6 +32,9 @@ from depth_anything_3.utils.alignment import (
 )
 from depth_anything_3.utils.geometry import affine_inverse, as_homogeneous, map_pdf_to_opacity
 from depth_anything_3.utils.ray_utils import get_extrinsic_from_camray
+
+from depth_anything_3.model.utils.gs_renderer import run_renderer_in_chunk_w_trj_mode
+from fused_ssim import fused_ssim
 
 def vram() -> str:
     return f"alloc={torch.cuda.memory_allocated()/1e9:.2f}GB | reserved={torch.cuda.memory_reserved()/1e9:.2f}GB"
@@ -64,7 +68,7 @@ class DepthAnything3Net(nn.Module):
     # Patch size for feature extraction
     PATCH_SIZE = 14
 
-    def __init__(self, net, head, raft_head, cam_dec=None, cam_enc=None, gs_head=None, gs_adapter=None):
+    def __init__(self, net, head, raft_head, scene_head, cam_dec=None, cam_enc=None, gs_head=None, gs_adapter=None):
         """
         Initialize DepthAnything3Net with given yaml-initialized configuration.
         """
@@ -98,7 +102,11 @@ class DepthAnything3Net(nn.Module):
                 ), f"gs_head output_dim should set to {gs_out_dim}, got {gs_head['output_dim']}"
                 self.gs_head = create_object(_wrap_cfg(gs_head))
 
-        self.raft_head = raft_head if isinstance(raft_head, nn.Module) else create_object(_wrap_cfg(raft_head))
+        self.scene_head = scene_head if isinstance(scene_head, nn.Module) else create_object(_wrap_cfg(scene_head))
+        # self.raft_head = raft_head if isinstance(raft_head, nn.Module) else create_object(_wrap_cfg(raft_head))
+        self.vanilla_dino = None
+        # self.vanilla_dino = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14_reg')
+        # self.vanilla_dino.eval()
 
         self.freeze()
 
@@ -108,7 +116,7 @@ class DepthAnything3Net(nn.Module):
         Any new layers added after freeze() will remain trainable.
         """
         freezed_modules = ""
-        for module in [self.backbone, self.head, self.cam_dec, self.cam_enc, self.gs_adapter, self.gs_head]:
+        for module in [self.backbone, self.head, self.cam_dec, self.cam_enc, self.gs_adapter, self.gs_head, self.vanilla_dino]:
             if module is not None:
                 freezed_modules += f"{module.__class__.__name__}, "
                 for param in module.parameters():
@@ -129,9 +137,9 @@ class DepthAnything3Net(nn.Module):
         Forward pass through the network.
 
         Args:
-            x: Input images (B, N, 3, H, W)
-            extrinsics: Camera extrinsics (B, N, 4, 4) 
-            intrinsics: Camera intrinsics (B, N, 3, 3) 
+            x: Input images (B, S, 3, H, W)
+            extrinsics: Camera extrinsics (B, S, 4, 4) 
+            intrinsics: Camera intrinsics (B, S, 3, 3) 
             feat_layers: List of layer indices to extract features from
             infer_gs: Enable Gaussian Splatting branch
             use_ray_pose: Use ray-based pose estimation
@@ -143,26 +151,34 @@ class DepthAnything3Net(nn.Module):
         # Extract features using backbone
         # print("Before Start   : ",vram())
         with torch.no_grad():
+            B, S, C, H, W = x.shape
+
             if extrinsics is not None:
                 with torch.autocast(device_type=x.device.type, enabled=False):
                     cam_token = self.cam_enc(extrinsics, intrinsics, x.shape[-2:])
             else:
                 cam_token = None
 
+            """
+            feats: layers of (patch_tokens:(B,S,N,2C), cam_tokens:(B,S,2C))
+            dino_feats: (cls_token:(B*S,C))
+            """
             feats, aux_feats = self.backbone(
                 x, cam_token=cam_token, export_feat_layers=export_feat_layers, ref_view_strategy=ref_view_strategy
             )
+            del aux_feats
+            # dino_feats = self.vanilla_dino(x.flatten(0,1))
+            # dino_feats = dino_feats.view(B,S,-1).detach()
             # feats = [[item.detach() for item in feat] for feat in feats]
-            H, W = x.shape[-2], x.shape[-1]
 
             # print("After Backbone : ",vram())
             # Process features through depth head
             with torch.autocast(device_type=x.device.type, enabled=False):
                 output = self._process_depth_head(feats, H, W)
-                # if use_ray_pose:
-                #     output = self._process_ray_pose_estimation(output, H, W)
-                # else:
-                #     output = self._process_camera_estimation(feats, H, W, output)
+                if use_ray_pose:
+                    output = self._process_ray_pose_estimation(output, H, W)
+                else:
+                    output = self._process_camera_estimation(feats, H, W, output)
                 # if infer_gs:
                 #     output = self._process_gs_head(feats, H, W, output, x, extrinsics, intrinsics)
             
@@ -171,15 +187,60 @@ class DepthAnything3Net(nn.Module):
                 # # Extract auxiliary features if requested
                 # output.aux = self._extract_auxiliary_features(aux_feats, export_feat_layers, H, W)
                 
-                del feats
+                
                 torch.cuda.empty_cache()
-        # print("After DepthDPT : ",vram())
-        output = self._process_raft_head(output)
-        # print("After SEA-RAFT : ",vram())
+            # print("After DPT : ",vram())
         
+        ssim_lambda = 0.2
+        depth_lambda = 5e-2
+
+        output = self._process_scene_head(feats, output)
+        gs_loss = F.l1_loss(output.gs_render[0], x)
+        ssim_loss = 1.0 - fused_ssim(output.gs_render[0], x)
+        depth_loss = F.l1_loss(output.gs_render[1], output.depth)
+
+        gs_loss *= (1.0 - ssim_lambda)
+        ssim_loss *= ssim_lambda
+        depth_loss *= depth_lambda
+        
+        output.loss_dict = {
+            'l1': gs_loss.item(),
+            'ssim': ssim_loss.item(),
+            'depth': depth_loss.item()
+        }
+        output.loss = gs_loss + ssim_loss + depth_loss
+        # output = self._process_raft_head(output)        
         # output = self._process_flow_head(feats, H, W, output)
 
         return output
+
+    def _process_scene_head(
+            self, feats: list[torch.Tensor], output: Dict[str, torch.Tensor]
+    ) -> Dict[str, torch.Tensor]:
+        """Process features to obtain scene-level representations."""
+        cam_token = feats[-1][1].detach()       # (B, S, C)
+        patch_token = feats[-1][0].detach()     # (B, S, N, C)
+              
+        raw_gs, scene_token = self.scene_head(cam_token, patch_token)
+        output.scene = scene_token[-1]
+        
+        if "extrinsics"  in output and "intrinsics" in output:
+            ext = output.extrinsics
+            ixt = output.intrinsics
+            colors, depths = run_renderer_in_chunk_w_trj_mode(
+                gaussians=raw_gs[-1],
+                extrinsics=ext,
+                intrinsics=ixt,
+                image_shape=(504,504),
+                # chunk_size=None,
+                trj_mode='original',
+                use_sh=False
+            )
+            # print("GS Render: ", vram())
+            output.gs_render = (colors, depths)
+
+        return output
+
     
     def _process_raft_head(
         self, output: Dict[str, torch.Tensor]

@@ -27,8 +27,8 @@ class SpringPreproc(Dataset):
     def __init__(self, root:str, isVal:bool, ep_len=2):
         super().__init__()
 
-        self.root = root
-        self.total_pth = sorted(glob.glob(root))
+        self.root = os.path.join(root,"train","*")
+        self.total_pth = sorted(glob.glob(self.root))
 
         split = int(len(self.total_pth) * 0.8)
         if not isVal:

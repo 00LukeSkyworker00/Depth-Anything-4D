@@ -1,5 +1,6 @@
-CUDA_VISIBLE_DEVICES=1,2,3,5,6,7 python train.py \
-    --data-dir /home/skyworker/data/spring \
+export CUDA_VISIBLE_DEVICES=0,4,5,6,7
+python train.py \
+    --data-dir /home/skyworker/data/real_estate_10k/DFoT \
     --out-dir /home/skyworker/result/da3_4d \
-    --batch 4 \
-    --ep-len 3 \
+    --batch 3 \
+    --ep-len 6 \
