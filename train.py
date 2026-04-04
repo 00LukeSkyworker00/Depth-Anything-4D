@@ -133,6 +133,7 @@ def Trainer(rank, args):
     max_lr = args.max_lr * args.world_size
     min_epoch = (args.max_steps // len(train_dataloader)) + 1
     total_epochs = max(min_epoch, args.epoch)
+    args.max_steps = total_epochs * len(train_dataloader)
     scheduler = optim.lr_scheduler.OneCycleLR(
         optimizer=optimizer, 
         max_lr=max_lr, 

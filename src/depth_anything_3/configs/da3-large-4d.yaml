@@ -83,4 +83,4 @@ scene_head:
 
   dim_in: *head_dim_in
   hid_dim: 512
-  num_pt_per_view: 500
+  num_pt_per_view: 400

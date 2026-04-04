@@ -195,20 +195,22 @@ class DepthAnything3Net(nn.Module):
         depth_lambda = 5e-2
 
         output = self._process_scene_head(feats, output)
-        gs_loss = F.l1_loss(output.gs_render[0], x)
-        ssim_loss = 1.0 - fused_ssim(output.gs_render[0], x)
-        depth_loss = F.l1_loss(output.gs_render[1], output.depth)
 
-        gs_loss *= (1.0 - ssim_lambda)
-        ssim_loss *= ssim_lambda
+        # gs_loss = F.l1_loss(output.gs_render[0], x)
+        # gs_loss *= (1.0 - ssim_lambda)
+
+        # ssim_loss = 1.0 - fused_ssim(output.gs_render[0], x)
+        # ssim_loss *= ssim_lambda
+
+        depth_loss = F.l1_loss(output.gs_render[1], output.depth)
         depth_loss *= depth_lambda
         
         output.loss_dict = {
-            'l1': gs_loss.item(),
-            'ssim': ssim_loss.item(),
+            # 'l1': gs_loss.item(),
+            # 'ssim': ssim_loss.item(),
             'depth': depth_loss.item()
         }
-        output.loss = gs_loss + ssim_loss + depth_loss
+        output.loss = depth_loss
         # output = self._process_raft_head(output)        
         # output = self._process_flow_head(feats, H, W, output)
 

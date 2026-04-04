@@ -37,7 +37,7 @@ class SceneDecoder(nn.Module):
 
         self.decoder = GaussianDecoder(
             d_model=hid_dim,
-            gs_per_token=8
+            gs_per_token=16
         )
 
     def forward(self, readout:Tensor, patch:Tensor):
@@ -62,11 +62,13 @@ class SceneDecoder(nn.Module):
         patch_token = self.proj_patch(patch).permute(1,0,2,3)
         # print("SceneDec Init:", vram())
 
+        layers = 2
         for frame_token in patch_token:
-            scene_token = self.cross_attn(
-                tgt=scene_token,
-                memory=frame_token
-            )
+            for _ in range(layers):
+                scene_token = self.cross_attn(
+                    tgt=scene_token,
+                    memory=frame_token
+                )
             out_token.append(scene_token)
             out_gs.append(self.decoder(scene_token))
             # print("SceneDec Transformer Layer:", vram())
@@ -77,7 +79,7 @@ class GaussianDecoder(nn.Module):
     def __init__(self, d_model=512, gs_per_token=4):
         super().__init__()
         self.K = gs_per_token
-        self.num_gs_params = 14
+        self.num_gs_params = 3+4+3
         out_dim = self.K * self.num_gs_params
         
         # A strong 3-layer MLP is usually sufficient here
@@ -111,11 +113,13 @@ class GaussianDecoder(nn.Module):
         # Quaternions must be normalized
         rotations = torch.nn.functional.normalize(gaussians[..., 6:10], dim=-1)
         
-        # Opacity must be between 0 and 1
-        opacities = torch.sigmoid(gaussians[..., 10:11]).squeeze(-1)
+        # # Opacity must be between 0 and 1
+        # opacities = torch.sigmoid(gaussians[..., 10:11]).squeeze(-1)
+        opacities = torch.ones_like(gaussians[..., 0].detach(), requires_grad=False)
         
-        # Color (Spherical Harmonics DC band) can be sigmoid for standard RGB
-        colors = torch.sigmoid(gaussians[..., 11:14]).unsqueeze(-1)
+        # # Color (Spherical Harmonics DC band) can be sigmoid for standard RGB
+        # colors = torch.sigmoid(gaussians[..., 11:14]).unsqueeze(-1)
+        colors = torch.ones_like(gaussians[..., :3].detach(), requires_grad=False)
         
         return Gaussians(
             means=means,
