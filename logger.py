@@ -78,7 +78,7 @@ class Logger(LoggerBase):
             if mode=='Val':
                 print(f'{key:<15} loss: { mean_loss:12.3e}')
             total_loss += mean_loss
-        self.writer.add_scalar(f'{mode}/total loss', mean_loss, epoch)
+        self.writer.add_scalar(f'{mode}/total loss', total_loss, epoch)
         if mode=='Val':
             print(f'{"total":<15} loss: { total_loss:12.3e}')
             if self.best_loss > total_loss:
