@@ -147,11 +147,11 @@ def Trainer(rank, args):
         save_env(args.out_dir)
     logger_print(f"Training scripts backup to folder.")
  
-    def reduce_loss(loss_tensor):
-        if dist.is_available() and dist.is_initialized():
-            dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
-            loss_tensor /= dist.get_world_size()
-        return loss_tensor
+    # def reduce_loss(loss_tensor):
+    #     if dist.is_available() and dist.is_initialized():
+    #         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
+    #         loss_tensor /= dist.get_world_size()
+    #     return loss_tensor
 
     # Start Training
     def step(sample, step:int, mode='train'):

@@ -1,4 +1,4 @@
-
+from pathlib import Path
 import time
 import os
 import numpy as np
@@ -8,6 +8,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
+
+from depth_anything_3.utils.gsply_helpers import export_ply
+from depth_anything_3.specs import Gaussians
 
 class LoggerBase():
     def __init__(self, args, device, train_ds, val_ds):
@@ -106,6 +109,8 @@ class Logger(LoggerBase):
         depth_render = out.gs_render[1][0].unsqueeze(-3).repeat(1,3,1,1).detach()
         vid = torch.stack([img, gs_render,depth,depth_render])
         self.writer.add_video(f'{mode}/Visualization',vid, epoch)
+        if mode == 'Val':
+            self.export_gsplat(out.gs, f'{epoch:04}_Val.ply')
 
     def save_model(self, model:nn.Module, optimizer:torch.optim.Optimizer, epoch):
         last = {
@@ -118,6 +123,19 @@ class Logger(LoggerBase):
         if self.has_best:
             torch.save(model.state_dict(),os.path.join(self.ckpt_pth,'best.pt'))
             self.has_best = False
+    
+    def export_gsplat(self, gsplat:Gaussians, file_name='gsplat.ply'):
+        export_pth = os.path.join(self.ckpt_pth,'export')
+        os.makedirs(export_pth, exist_ok=True)
+        export_ply(
+            means=gsplat.means[0],
+            scales=gsplat.scales[0],
+            rotations=gsplat.rotations[0],
+            harmonics=gsplat.harmonics[0],
+            opacities=gsplat.opacities[0],
+            path=Path(os.path.join(export_pth,file_name))
+        )
+
     
 def print_vram(device, msg=""):
     """
