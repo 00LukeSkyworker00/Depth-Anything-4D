@@ -36,8 +36,11 @@ def Eval(args):
     # Init model
     model = DepthAnything3.from_pretrained(args.model_dir, custom_config=args.custom_config)
     model = model.to(device)
-    ckpt = torch.load(args.ckpt_pth,map_location=device)
-    model.load_state_dict(ckpt)
+    best_ckpt = torch.load(args.best_pth,map_location=device)
+    state_dict = {}
+    for k, v in best_ckpt.items():
+        state_dict[k.replace("module.", "")] = v
+    model.load_state_dict(state_dict)
     model.eval()
     print("Model loaded with checkpoint.")
 
@@ -70,7 +73,7 @@ def Eval(args):
             logger.record_loss(out.loss_dict)
             logger.export_gsplat(out.gs, f'scene_{iters:04}.ply')
             iters += 1
-            if iters >= args.num_iters:
+            if iters >= args.num_iter:
                 break
 
 
@@ -89,6 +92,11 @@ def main():
         required=True
     )
     parser.add_argument(
+        "--out-dir",
+        help="Path to the output directory",
+        required=True
+    )
+    parser.add_argument(
         "--ckpt-dir",
         help="Path to the checkpoint directory",
         required=True
@@ -96,9 +104,10 @@ def main():
 
     # Training hyperparameters
     parser.add_argument("--seed", type=int, default=0, help="Seed for reproducibility")
-    parser.add_argument("--batch", type=int, default=3, help="Total batch size")
+    parser.add_argument("--batch", type=int, default=1, help="Total batch size")
+    parser.add_argument("--ep-len", type=int, default=4, help="Episode length of the input clips")
     parser.add_argument("--num-worker", type=int, default=-1, help="Number of workers, -1 for automatic detection.")
-    parser.add_argument("--num-iter", type=int, default=-1, help="Number of iters to inference from dataset.")
+    parser.add_argument("--num-iter", type=int, default=3, help="Number of iters to inference from dataset.")
 
     args = parser.parse_args()
 
@@ -114,7 +123,8 @@ def main():
     args.custom_config = model_pth[args.model][1]
   
     # Check checkpoint exist
-    args.ckpt_pth = os.path.join(args.out_dir,'ckpts','best.pt')
+    args.ckpt_pth = os.path.join(args.out_dir,'ckpts')
+    args.best_pth = os.path.join(args.ckpt_pth,'best.pt')
     if os.path.exists(args.ckpt_pth):
         Eval(args)
     else:

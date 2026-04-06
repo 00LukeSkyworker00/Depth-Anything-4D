@@ -121,7 +121,7 @@ class Logger(LoggerBase):
         }
         torch.save(last, os.path.join(self.ckpt_pth,'last.pt'))
         if self.has_best:
-            torch.save(model.state_dict(),os.path.join(self.ckpt_pth,'best.pt'))
+            torch.save(model.module.state_dict(),os.path.join(self.ckpt_pth,'best.pt'))
             self.has_best = False
     
     def export_gsplat(self, gsplat:Gaussians, file_name='gsplat.ply'):
