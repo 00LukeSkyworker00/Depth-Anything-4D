@@ -80,7 +80,7 @@ def Trainer(rank, args):
             print(msg)
     
     # Initialize process group for DDP
-    init_process_group(backend='gloo', rank=rank, world_size=args.world_size)
+    init_process_group(backend='nccl', rank=rank, world_size=args.world_size)
     torch.set_printoptions(precision=10) 
 
     # Set number of workers
@@ -143,8 +143,7 @@ def Trainer(rank, args):
     logger_print(f"[Optimizer & Schedular] Max LR: {max_lr} | Max Steps: {args.max_steps} | Total Epochs: {total_epochs}")
 
     # Backup training scripts
-    if is_main_rank:
-        save_env(args.out_dir)
+    logger.save_env(args, model.module.config)
     logger_print(f"Training scripts backup to folder.")
  
     # def reduce_loss(loss_tensor):

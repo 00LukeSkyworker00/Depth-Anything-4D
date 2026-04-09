@@ -48,13 +48,14 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
 
         # Build the underlying network
         config_pth = Path(MODEL_REGISTRY[self.model_name])
-        config_4d = f"{config_pth.stem}-4d.yaml"
-        custom_pth = config_pth.with_name(config_4d)
-        if os.path.exists(custom_pth):
-            config_pth = custom_pth
-            print(f"Using custom config {config_4d}")
-        else:
-            print(f"Custom config {config_4d} not found!!!")
+        if 'custom_config' in kwargs:
+            config = kwargs['custom_config']
+            custom_pth = config_pth.with_name(config)
+            if os.path.exists(custom_pth):
+                config_pth = custom_pth
+                print(f"Using custom config {config}")
+            else:
+                print(f"Custom config {config} not found!!!! Reverse back to default...")
         self.config = load_config(str(config_pth))
         self.model = create_object(self.config)
 

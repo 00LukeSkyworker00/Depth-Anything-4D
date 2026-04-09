@@ -194,7 +194,7 @@ class DepthAnything3Net(nn.Module):
         ssim_lambda = 0.2
         depth_lambda = 5e-2
 
-        output = self._process_scene_head(feats, output)
+        output = self._process_scene_head(feats, H, W, output)
 
         # gs_loss = F.l1_loss(output.gs_render[0], x)
         # gs_loss *= (1.0 - ssim_lambda)
@@ -217,20 +217,22 @@ class DepthAnything3Net(nn.Module):
         return output
 
     def _process_scene_head(
-            self, feats: list[torch.Tensor], output: Dict[str, torch.Tensor]
+        self, feats: list[torch.Tensor], H: int, W: int, output: Dict[str, torch.Tensor]
     ) -> Dict[str, torch.Tensor]:
         """Process features to obtain scene-level representations."""
-        cam_token = feats[-1][1].detach()       # (B, S, C)
-        patch_token = feats[-1][0].detach()     # (B, S, N, C)
-              
-        raw_gs, scene_token = self.scene_head(cam_token, patch_token)
-        output.scene = scene_token[-1]
+        feats_layers =tuple(torch.stack(t, dim=0) for t in zip(*feats))
+        cam_layers = feats_layers[1]
+        patch_layers = feats_layers[0]
+
+        raw_gs, scene_token = self.scene_head(cam_layers, patch_layers, H, W)
+        # output.scene = scene_token[-1]
+        output.gs = raw_gs
         
         if "extrinsics"  in output and "intrinsics" in output:
             ext = output.extrinsics
             ixt = output.intrinsics
             colors, depths = run_renderer_in_chunk_w_trj_mode(
-                gaussians=raw_gs[-1],
+                gaussians=raw_gs,
                 extrinsics=ext,
                 intrinsics=ixt,
                 image_shape=(504,504),

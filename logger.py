@@ -1,8 +1,10 @@
 from pathlib import Path
 import time
-import os
+import os, subprocess
 import numpy as np
 from collections import Counter
+from typing import Any, Callable, List, Union
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
 import torch
 import torch.nn as nn
@@ -14,6 +16,9 @@ from depth_anything_3.specs import Gaussians
 
 class LoggerBase():
     def __init__(self, args, device, train_ds, val_ds):
+        pass
+
+    def save_env(self, args, config:Union[DictConfig, ListConfig]):
         pass
 
     def timed_print(self, prefix_msg:str):
@@ -42,7 +47,8 @@ class LoggerBase():
 
 class Logger(LoggerBase):
     def __init__(self, args, device, train_ds, val_ds):
-        self.writer = SummaryWriter(os.path.join(args.out_dir, 'logs'))
+        self.log_dir = os.path.join(args.out_dir, 'logs')
+        self.writer = SummaryWriter(self.log_dir)
         self.device = device
         self.ckpt_pth = args.ckpt_pth
 
@@ -56,6 +62,14 @@ class Logger(LoggerBase):
         self.loss_dict = Counter()
         self.sample_count = 0
 
+    def save_env(self, args, config:Union[DictConfig, ListConfig]):
+        hash = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
+        diff = subprocess.check_output(["git", "diff"]).decode()
+        self.writer.add_text("Git Hash", hash)
+        self.writer.add_text("Git Diff", diff)
+        self.writer.add_hparams(hparam_dict=vars(args), metric_dict={"final_loss": 0.0})
+        OmegaConf.save(config, os.path.join(self.log_dir, "conf.yaml"))
+    
     def timed_print(self, prefix_msg:str):
         now = time.time()
         duration = now - self.start_time

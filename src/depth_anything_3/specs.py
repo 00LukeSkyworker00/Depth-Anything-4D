@@ -29,7 +29,15 @@ class Gaussians:
     rotations: torch.Tensor  # world_quat_wxyz, "batch gaussian 4"
     harmonics: torch.Tensor  # world SH, "batch gaussian 3 d_sh"
     opacities: torch.Tensor  # opacity | opacity SH, "batch gaussian" | "batch gaussian 1 d_sh"
-
+    
+    def __add__(self, other: "Gaussians"):
+        return Gaussians(
+            means=torch.cat([self.means, other.means], dim=1),
+            scales=torch.cat([self.scales, other.scales], dim=1),
+            rotations=torch.cat([self.rotations, other.rotations], dim=1),
+            harmonics=torch.cat([self.harmonics, other.harmonics], dim=1),
+            opacities=torch.cat([self.opacities, other.opacities], dim=1),
+        )
 
 @dataclass
 class Prediction:

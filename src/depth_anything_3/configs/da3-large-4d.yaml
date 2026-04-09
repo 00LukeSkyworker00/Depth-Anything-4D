@@ -77,10 +77,12 @@ raft_head:
 
 scene_head:
   __object__:
-    path: depth_anything_3.model.scene_dec
-    name: SceneDecoder
+    path: depth_anything_3.model.scene_dec_dual
+    name: DualSceneDecoder
     args: as_params
 
   dim_in: *head_dim_in
-  hid_dim: 512
-  num_pt_per_view: 400
+  hid_dim: [128, 256, 512, 1024]
+  token_resize: [8,4,2,1]
+  base_tokens: 200
+  iters_per_frame: 1
