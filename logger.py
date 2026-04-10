@@ -1,6 +1,8 @@
 from pathlib import Path
 import time
 import os, subprocess
+import wandb
+from datetime import datetime
 import numpy as np
 from collections import Counter
 from typing import Any, Callable, List, Union
@@ -45,12 +47,39 @@ class LoggerBase():
     def save_model(self, model:nn.Module, optimizer:torch.optim.Optimizer, epoch):
         pass
 
+    def cleanup(self):
+        pass
+
 class Logger(LoggerBase):
-    def __init__(self, args, device, train_ds, val_ds):
-        self.log_dir = os.path.join(args.out_dir, 'logs')
-        self.writer = SummaryWriter(self.log_dir)
+    def __init__(self, args, device, train_ds, val_ds, inference:bool=False):
+        if inference:
+            assert os.path.exists(args.out_dir), f"out_dir not found: {args.out_dir}"
+            assert os.path.exists(args.ckpt_pth), f"ckpt_pth not found: {args.ckpt_pth}"
+            self.out_dir = args.out_dir
+            return
+        # Create output directory
+        timestamp = datetime.today().isoformat()
+        self.out_dir = os.path.join(args.out_dir, timestamp)
+        self.log_dir = os.path.join(self.out_dir, 'logs')
+        self.ckpt_pth = os.path.join(self.out_dir,'ckpts')
+        os.makedirs(self.log_dir, exist_ok=False)
+        os.makedirs(self.ckpt_pth, exist_ok=False)
+        print(f"Output Directory: {args.out_dir}")
+
         self.device = device
-        self.ckpt_pth = args.ckpt_pth
+        self.writer = SummaryWriter(self.log_dir)
+        
+        # Setup WanDB
+        wandb.login()
+        self.wandb_run = wandb.init(
+            project=args.run_name,
+            config=vars(args),
+            name=timestamp,
+            settings=wandb.Settings(code_dir=".")
+        )
+        # Define custom step axes:
+        self.wandb_run.define_metric("Train/*", step_metric="Train_step", hidden=True)
+        self.wandb_run.define_metric("Val/*", step_metric="Val_step", hidden=True)
 
         self.train_vis = next(iter(train_ds))
         self.val_vis = next(iter(val_ds))
@@ -68,7 +97,7 @@ class Logger(LoggerBase):
         self.writer.add_text("Git Hash", hash)
         self.writer.add_text("Git Diff", diff)
         self.writer.add_hparams(hparam_dict=vars(args), metric_dict={"final_loss": 0.0})
-        OmegaConf.save(config, os.path.join(self.log_dir, "conf.yaml"))
+        OmegaConf.save(config, os.path.join(self.out_dir, "conf.yaml"))
     
     def timed_print(self, prefix_msg:str):
         now = time.time()
@@ -77,6 +106,7 @@ class Logger(LoggerBase):
 
     def plt_lr(self, lr:torch.Tensor, step:int):
         self.writer.add_scalars('Learn Rate', {'value': lr[0]}, step)
+        self.wandb_run.log({"Train/lr": lr, "Train_step": step})
 
     def record_loss(self, d: dict[str, float]):
         self.loss_dict.update(d)
@@ -87,15 +117,24 @@ class Logger(LoggerBase):
         if len(self.loss_dict) == 0:
             return
         total_loss = 0
+
         if mode=='Val':
             print(f'==== {mode} Loss ====')
+        
+        run_dict = {}
         for key, loss in self.loss_dict.items():
+            tag = f'{mode}/{key} loss'
             mean_loss = loss / self.sample_count
-            self.writer.add_scalar(f'{mode}/{key} loss', mean_loss, epoch)
+            self.writer.add_scalar(tag, mean_loss, epoch)
+            run_dict[tag] = mean_loss
             if mode=='Val':
                 print(f'{key:<15} loss: { mean_loss:12.3e}')
             total_loss += mean_loss
         self.writer.add_scalar(f'{mode}/total loss', total_loss, epoch)
+        run_dict[f'{mode}/total loss'] = total_loss
+        run_dict[f'{mode}_step'] = epoch
+        self.wandb_run.log(run_dict)
+
         if mode=='Val':
             print(f'{"total":<15} loss: { total_loss:12.3e}')
             if self.best_loss > total_loss:
@@ -116,15 +155,23 @@ class Logger(LoggerBase):
             export_feat_layers=[], infer_gs=False,
             use_ray_pose=False, ref_view_strategy="saddle_balanced"
         )
+        vid = self.construct_vis(x, out).cpu()
+        self.writer.add_video(f'{mode}/Visualization',vid, epoch)        
+        self.wandb_run.log({
+            f'{mode}/Visualization': wandb.Video(vid*255.0, fps=4, format="gif"),
+            f'{mode}_step': epoch
+        })
+        if mode == 'Val':
+            self.export_gsplat(out.gs, f'{epoch:04}_Val.ply')
+    
+    def construct_vis(self, x:torch.Tensor, out:dict):
         img = x[0].detach()
         img = (img - img.min()) / (img.max() - img.min() + 1e-8)
         gs_render = out.gs_render[0][0].detach()
         depth = out.depth[0].unsqueeze(-3).repeat(1,3,1,1).detach()
         depth_render = out.gs_render[1][0].unsqueeze(-3).repeat(1,3,1,1).detach()
         vid = torch.stack([img, gs_render,depth,depth_render])
-        self.writer.add_video(f'{mode}/Visualization',vid, epoch)
-        if mode == 'Val':
-            self.export_gsplat(out.gs, f'{epoch:04}_Val.ply')
+        return vid
 
     def save_model(self, model:nn.Module, optimizer:torch.optim.Optimizer, epoch):
         last = {
@@ -139,7 +186,7 @@ class Logger(LoggerBase):
             self.has_best = False
     
     def export_gsplat(self, gsplat:Gaussians, file_name='gsplat.ply'):
-        export_pth = os.path.join(self.ckpt_pth,'export')
+        export_pth = os.path.join(self.out_dir,'export')
         os.makedirs(export_pth, exist_ok=True)
         export_ply(
             means=gsplat.means[0],
@@ -149,6 +196,10 @@ class Logger(LoggerBase):
             opacities=gsplat.opacities[0],
             path=Path(os.path.join(export_pth,file_name))
         )
+
+    def cleanup(self):
+        self.writer.close()
+        self.wandb_run.finish()
 
     
 def print_vram(device, msg=""):

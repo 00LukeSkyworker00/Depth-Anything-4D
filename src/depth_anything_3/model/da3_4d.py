@@ -32,6 +32,7 @@ from depth_anything_3.utils.alignment import (
 )
 from depth_anything_3.utils.geometry import affine_inverse, as_homogeneous, map_pdf_to_opacity
 from depth_anything_3.utils.ray_utils import get_extrinsic_from_camray
+from depth_anything_3.specs import Gaussians
 
 from depth_anything_3.model.utils.gs_renderer import run_renderer_in_chunk_w_trj_mode
 from fused_ssim import fused_ssim
@@ -224,26 +225,46 @@ class DepthAnything3Net(nn.Module):
         cam_layers = feats_layers[1]
         patch_layers = feats_layers[0]
 
-        raw_gs, scene_token = self.scene_head(cam_layers, patch_layers, H, W)
+        raw_gs, _ = self.scene_head(
+            cam_layers = cam_layers, 
+            patch_layers = patch_layers, 
+            H = H, W = W,
+            concat_gs = False
+        )
         # output.scene = scene_token[-1]
+        render_layers = False
+        if isinstance(raw_gs, list):
+            raw_gs_layers = raw_gs
+            raw_gs = sum(raw_gs[1:], raw_gs[0])
+            output.gs_layers = raw_gs_layers
+            render_layers = True
         output.gs = raw_gs
-        
-        if "extrinsics"  in output and "intrinsics" in output:
-            ext = output.extrinsics
-            ixt = output.intrinsics
-            colors, depths = run_renderer_in_chunk_w_trj_mode(
-                gaussians=raw_gs,
-                extrinsics=ext,
-                intrinsics=ixt,
-                image_shape=(504,504),
-                # chunk_size=None,
-                trj_mode='original',
-                use_sh=False
-            )
-            # print("GS Render: ", vram())
-            output.gs_render = (colors, depths)
 
+        if "extrinsics"  in output and "intrinsics" in output:
+            gs_render = self.render_gs(output, raw_gs)
+            output.gs_render = gs_render
+            if render_layers:
+                output.gs_render_layers = []
+                for gs in raw_gs_layers:
+                    gs_render = self.render_gs(output, gs)
+                    output.gs_render_layers.append(gs_render)
+            
         return output
+
+    def render_gs(self, output, raw_gs):
+        ext = output.extrinsics
+        ixt = output.intrinsics
+        colors, depths = run_renderer_in_chunk_w_trj_mode(
+            gaussians=raw_gs,
+            extrinsics=ext,
+            intrinsics=ixt,
+            image_shape=(504,504),
+            # chunk_size=None,
+            trj_mode='original',
+            use_sh=False,
+        )
+        # print("GS Render: ", vram())
+        return (colors, depths)
 
     
     def _process_raft_head(

@@ -23,11 +23,15 @@ class SceneDecoder(nn.Module):
             hid_dim:int=512, 
             token_resize:int=8,
             base_tokens:int=200, 
-            iters_per_frame:int=1
+            iters_per_frame:int=1,
+            out_layers:list[int]=[],
+            gs_dim:int=7,
+            out_growth:int=4
         ):
         super().__init__()
         self.hid_dim = hid_dim
         self.iters_per_frame = iters_per_frame
+        self.out_layers = out_layers
         self.init_mu = nn.Sequential(
             nn.Linear(dim_in, hid_dim),
             nn.GELU(),
@@ -54,7 +58,8 @@ class SceneDecoder(nn.Module):
 
         self.decoder = GaussianDecoder(
             d_model=hid_dim,
-            gs_per_token=8//token_resize
+            gs_per_token=out_growth,
+            gs_dim=gs_dim
         )
 
     def forward(self, readout:Tensor, patch:Tensor, H:int, W:int):
@@ -82,14 +87,15 @@ class SceneDecoder(nn.Module):
         patch_token = self.resize_patch(patch).reshape(B, S, self.hid_dim, -1).permute(1,0,3,2).contiguous()     # (S, B, N', hid)
         # print("SceneDec Init:", vram())
 
-        for frame_token in patch_token:
+        for i in range(patch_token.shape[0]):
             for _ in range(self.iters_per_frame):
                 scene_token = self.cross_attn(
                     tgt=scene_token,
-                    memory=frame_token
+                    memory=patch_token[i]
                 )   #(B, S*P, hid)
-            out_token.append(scene_token)
-            out_gs.append(self.decoder(scene_token))
+            if i in self.out_layers or i+1 == patch_token.shape[0]:
+                out_token.append(scene_token)
+                out_gs.append(self.decoder(scene_token))
             # print("SceneDec Transformer Layer:", vram())
         
         return out_gs, out_token
@@ -103,10 +109,10 @@ class SceneDecoder(nn.Module):
         return x + pe
 
 class GaussianDecoder(nn.Module):
-    def __init__(self, d_model=512, gs_per_token=4):
+    def __init__(self, d_model=512, gs_per_token=4, gs_dim=7):
         super().__init__()
         self.K = gs_per_token
-        self.num_gs_params = 3+4+3
+        self.num_gs_params = gs_dim
         out_dim = self.K * self.num_gs_params
         
         # A strong 3-layer MLP is usually sufficient here

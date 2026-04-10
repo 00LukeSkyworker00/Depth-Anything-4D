@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES=4,5,7,8,9
+export CUDA_VISIBLE_DEVICES=0,1,5,6,8
 python train.py \
     --data-dir /home/skyworker/data/real_estate_10k/DFoT \
     --out-dir /home/skyworker/result/da3_4d \

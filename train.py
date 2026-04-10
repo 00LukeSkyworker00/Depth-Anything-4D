@@ -80,7 +80,7 @@ def Trainer(rank, args):
             print(msg)
     
     # Initialize process group for DDP
-    init_process_group(backend='nccl', rank=rank, world_size=args.world_size)
+    init_process_group(backend='gloo', rank=rank, world_size=args.world_size)
     torch.set_printoptions(precision=10) 
 
     # Set number of workers
@@ -127,7 +127,7 @@ def Trainer(rank, args):
 
     # Create optimizer
     params = [{'params': model.parameters()}]
-    optimizer = optim.Adam(params, lr=0)
+    optimizer = optim.AdamW(params, lr=0)
 
     # Create schedular
     max_lr = args.max_lr * args.world_size
@@ -203,6 +203,7 @@ def Trainer(rank, args):
         logger.log_viz(model, i, 'Val')
         logger.save_model(model, optimizer, i)
 
+    logger.cleanup()
     cleanup(rank)
     
 def main():
@@ -224,6 +225,7 @@ def main():
         help="Path to the output directory",
         required=True
     )
+    parser.add_argument('--run_name', type=str, default='Scene Token Test')
 
     # Training hyperparameters
     parser.add_argument("--seed", type=int, default=0, help="Seed for reproducibility")
@@ -262,14 +264,6 @@ def main():
     # os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     set_network(args.port)
   
-    # Create output directory
-    args.out_dir = os.path.join(args.out_dir, datetime.today().isoformat())
-    ckpt_pth = os.path.join(args.out_dir,'ckpts')
-    args.ckpt_pth = ckpt_pth
-    os.makedirs(args.out_dir, exist_ok=False)
-    os.makedirs(args.ckpt_pth, exist_ok=False)
-    print(f"Output Directory: {args.out_dir}")
-
     # Spawn trainer
     args.world_size = torch.cuda.device_count()
     print(f'Spawning processes on {args.world_size} GPUs...')

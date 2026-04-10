@@ -50,7 +50,10 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         config_pth = Path(MODEL_REGISTRY[self.model_name])
         if 'custom_config' in kwargs:
             config = kwargs['custom_config']
-            custom_pth = config_pth.with_name(config)
+            if os.path.exists(config):
+                custom_pth = config
+            else:
+                custom_pth = config_pth.with_name(config)
             if os.path.exists(custom_pth):
                 config_pth = custom_pth
                 print(f"Using custom config {config}")

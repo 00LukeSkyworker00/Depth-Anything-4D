@@ -5,10 +5,13 @@ from tqdm import tqdm
 import torch
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.sampler import BatchSampler
+from torchvision.utils import make_grid
 
 # from dataset.spring import SpringDataset
 # from dataset.mip_nerf_360 import MipNerf360
 from dataset.real_estate_10k_256 import RealEstate10K256
+
+import imageio
 
 from logger import Logger
 from model import DepthAnything3
@@ -33,17 +36,6 @@ def Eval(args):
         args.num_worker = min(args.num_worker, 8)
     print(f"{args.num_worker} workers.")
 
-    # Init model
-    model = DepthAnything3.from_pretrained(args.model_dir, custom_config=args.custom_config)
-    model = model.to(device)
-    best_ckpt = torch.load(args.best_pth,map_location=device)
-    state_dict = {}
-    for k, v in best_ckpt.items():
-        state_dict[k.replace("module.", "")] = v
-    model.load_state_dict(state_dict)
-    model.eval()
-    print("Model loaded with checkpoint.")
-
     # Create dataloader
     def init_dataloader(data_glob:str):
         dataset = RealEstate10K256(root=data_glob, isVal=True, ep_len=args.ep_len)
@@ -54,7 +46,18 @@ def Eval(args):
     val_dataloader = init_dataloader(args.data_dir)
     
     # Create logger
-    logger = Logger(args, device, val_dataloader, val_dataloader)
+    logger = Logger(args, device, val_dataloader, val_dataloader, inference=True)
+
+    # Init model
+    model = DepthAnything3.from_pretrained(args.model_dir, custom_config=args.custom_config)
+    model = model.to(device)
+    best_ckpt = torch.load(args.best_pth,map_location=device)
+    state_dict = {}
+    for k, v in best_ckpt.items():
+        state_dict[k.replace("module.", "")] = v
+    model.load_state_dict(state_dict)
+    model.eval()
+    print("Model loaded with checkpoint.")
 
     with torch.no_grad():
         iters = 0
@@ -70,8 +73,23 @@ def Eval(args):
                 export_feat_layers=[], infer_gs=False,
                 use_ray_pose=False, ref_view_strategy="saddle_balanced"
             )
-            logger.record_loss(out.loss_dict)
+            
+            def save_gif(img, out, filename):
+                vid = logger.construct_vis(img, out).permute(1,0,2,3,4)
+                vid_grid = []
+                for frames in vid:
+                    frames = (make_grid(frames, nrow=2) * 255).clip(0, 255).permute(1,2,0)
+                    frames = frames.cpu().numpy().astype("uint8")
+                    vid_grid.append(frames)
+                imageio.mimsave(os.path.join(args.out_dir, 'export', filename), vid_grid, fps=10, loop=0)
+
+            # logger.record_loss(out.loss_dict)
             logger.export_gsplat(out.gs, f'scene_{iters:04}.ply')
+            save_gif(img, out, f'scene_{iters:04}.gif')   
+
+            if "gs_layers" in out:
+                for i, layer in enumerate(out.gs_layers):
+                    logger.export_gsplat(layer, f'scene_{iters:04}_layer_{i:02}.ply')
             iters += 1
             if iters >= args.num_iter:
                 break
@@ -101,6 +119,11 @@ def main():
         help="Path to the checkpoint directory",
         required=True
     )
+    parser.add_argument(
+        "--config-pth",
+        help="Path to the config file",
+        required=True
+    )
 
     # Training hyperparameters
     parser.add_argument("--seed", type=int, default=0, help="Seed for reproducibility")
@@ -120,7 +143,7 @@ def main():
     }
 
     args.model_dir = model_pth[args.model][0]
-    args.custom_config = model_pth[args.model][1]
+    args.custom_config = args.config_pth
   
     # Check checkpoint exist
     args.ckpt_pth = os.path.join(args.out_dir,'ckpts')
