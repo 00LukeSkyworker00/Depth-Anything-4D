@@ -1,6 +1,7 @@
 import math
 import argparse, os
 import numpy as np
+import traceback
 import psutil
 from tqdm import tqdm
 import socket, shutil, glob, random
@@ -8,6 +9,7 @@ from datetime import datetime
 import flow_vis
 
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 import torch.multiprocessing as mp
 import torch.distributed as dist
@@ -20,6 +22,7 @@ from torch.utils.data.distributed import DistributedSampler
 # from dataset.spring import SpringDataset
 # from dataset.mip_nerf_360 import MipNerf360
 from dataset.real_estate_10k_256 import RealEstate10K256
+from fused_ssim import fused_ssim
 
 from logger import Logger, LoggerBase
 
@@ -66,11 +69,24 @@ def cleanup(rank):
     # print(f"Process {rank} cleaned up.")
 
 def Trainer(rank, args):
-    is_main_rank = (rank == (args.world_size - 1))
-
-    # Set random seed for reproducibility
     set_rnd_seed(args.seed)
 
+    try:
+        process(rank, args)
+
+    except KeyboardInterrupt:
+        print(f"[Rank {rank}] KeyboardInterrupt", flush=True)
+
+    except Exception as e:
+        print(f"[Rank {rank}] failed: {e}", flush=True)
+        traceback.print_exc()
+
+    finally:
+        cleanup(rank)
+
+
+def process(rank, args):
+    is_main_rank = (rank == (args.world_size - 1))
     # Set device for each process
     torch.cuda.set_device(rank)
     device = torch.device(f"cuda:{rank}")
@@ -80,7 +96,7 @@ def Trainer(rank, args):
             print(msg)
     
     # Initialize process group for DDP
-    init_process_group(backend='gloo', rank=rank, world_size=args.world_size)
+    init_process_group(backend='nccl', rank=rank, world_size=args.world_size)
     torch.set_printoptions(precision=10) 
 
     # Set number of workers
@@ -145,12 +161,46 @@ def Trainer(rank, args):
     # Backup training scripts
     logger.save_env(args, model.module.config)
     logger_print(f"Training scripts backup to folder.")
- 
-    # def reduce_loss(loss_tensor):
-    #     if dist.is_available() and dist.is_initialized():
-    #         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
-    #         loss_tensor /= dist.get_world_size()
-    #     return loss_tensor
+
+    def compute_loss(output, img, is_reduce:bool=False):
+        """Compute loss from model output."""
+        if not hasattr(output, 'gs_render') or output.gs_render is None:
+            return None, {}
+        
+        loss = 0
+
+        ssim_lambda = 0.2
+        depth_lambda = 5e-2
+        
+        # recon_loss = F.l1_loss(output.gs_render[0], img)
+        # recon_loss *= (1.0 - ssim_lambda)
+        # recon_loss = reduce_loss(recon_loss) if is_reduce else recon_loss
+        # loss += recon_loss
+        
+        # ssim_loss = 1.0 - fused_ssim(output.gs_render[0], img)
+        # ssim_loss *= ssim_lambda
+        # ssim_loss = reduce_loss(ssim_loss) if is_reduce else ssim_loss
+        # loss += ssim_loss
+        
+        depth_loss = F.l1_loss(output.gs_render[1], output.depth)
+        depth_loss *= depth_lambda
+        depth_loss = reduce_loss(depth_loss) if is_reduce else depth_loss
+        loss += depth_loss
+        
+        loss_dict = {
+            # 'recon': recon_loss.item(),
+            # 'ssim': ssim_loss.item(),
+            'depth': depth_loss.item(),
+            'total': loss.item()
+            }
+        return loss, loss_dict
+
+    def reduce_loss(loss:torch.Tensor):
+        """Reduce loss dictionary across all ranks in DDP."""
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(loss, op=dist.ReduceOp.SUM)
+            loss /= dist.get_world_size()        
+        return loss
 
     # Start Training
     def step(sample, step:int, mode='train'):
@@ -167,17 +217,23 @@ def Trainer(rank, args):
             image=img, extrinsics=exts, intrinsics=ixts,
             export_feat_layers=[], infer_gs=False,
             use_ray_pose=False, ref_view_strategy="saddle_balanced"
-        )        
-        loss = out.loss
-        logger.record_loss(out.loss_dict)
+        )
         
-        if not isVal:
-            # Backward pass and optimizer step
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            logger.plt_lr(scheduler.get_last_lr(), step)
+        # Compute loss
+        loss, loss_dict = compute_loss(out, img, is_reduce=isVal)
+        
+        if loss is not None:  
+            logger.record_loss(loss_dict)
+            
+            if not isVal:
+                # Backward pass and optimizer step
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                scheduler.step()
+                logger.plt_lr(scheduler.get_last_lr(), step)
+        else:
+            raise ValueError("loss is None")
 
     step_counter = 0
     for i in range(total_epochs):
@@ -204,7 +260,6 @@ def Trainer(rank, args):
         logger.save_model(model, optimizer, i)
 
     logger.cleanup()
-    cleanup(rank)
     
 def main():
     parser = argparse.ArgumentParser()

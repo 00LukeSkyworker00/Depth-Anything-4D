@@ -35,7 +35,7 @@ from depth_anything_3.utils.ray_utils import get_extrinsic_from_camray
 from depth_anything_3.specs import Gaussians
 
 from depth_anything_3.model.utils.gs_renderer import run_renderer_in_chunk_w_trj_mode
-from fused_ssim import fused_ssim
+# from fused_ssim import fused_ssim
 
 def vram() -> str:
     return f"alloc={torch.cuda.memory_allocated()/1e9:.2f}GB | reserved={torch.cuda.memory_reserved()/1e9:.2f}GB"
@@ -192,26 +192,8 @@ class DepthAnything3Net(nn.Module):
                 torch.cuda.empty_cache()
             # print("After DPT : ",vram())
         
-        ssim_lambda = 0.2
-        depth_lambda = 5e-2
-
         output = self._process_scene_head(feats, H, W, output)
-
-        # gs_loss = F.l1_loss(output.gs_render[0], x)
-        # gs_loss *= (1.0 - ssim_lambda)
-
-        # ssim_loss = 1.0 - fused_ssim(output.gs_render[0], x)
-        # ssim_loss *= ssim_lambda
-
-        depth_loss = F.l1_loss(output.gs_render[1], output.depth)
-        depth_loss *= depth_lambda
         
-        output.loss_dict = {
-            # 'l1': gs_loss.item(),
-            # 'ssim': ssim_loss.item(),
-            'depth': depth_loss.item()
-        }
-        output.loss = depth_loss
         # output = self._process_raft_head(output)        
         # output = self._process_flow_head(feats, H, W, output)
 

@@ -64,7 +64,7 @@ class Logger(LoggerBase):
         self.ckpt_pth = os.path.join(self.out_dir,'ckpts')
         os.makedirs(self.log_dir, exist_ok=False)
         os.makedirs(self.ckpt_pth, exist_ok=False)
-        print(f"Output Directory: {args.out_dir}")
+        print(f"Output Directory: {self.out_dir}")
 
         self.device = device
         self.writer = SummaryWriter(self.log_dir)
@@ -158,7 +158,7 @@ class Logger(LoggerBase):
         vid = self.construct_vis(x, out).cpu()
         self.writer.add_video(f'{mode}/Visualization',vid, epoch)        
         self.wandb_run.log({
-            f'{mode}/Visualization': wandb.Video(vid*255.0, fps=4, format="gif"),
+            f'{mode}/Visualization': wandb.Video((vid*255.0).clip(0,255), fps=4, format="gif"),
             f'{mode}_step': epoch
         })
         if mode == 'Val':

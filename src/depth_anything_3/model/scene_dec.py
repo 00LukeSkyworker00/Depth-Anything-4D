@@ -126,6 +126,13 @@ class GaussianDecoder(nn.Module):
             nn.Linear(d_model, out_dim)
         )
 
+    def check_nan(self, tensor:torch.Tensor, name:str):
+        if torch.is_floating_point(tensor):
+            if torch.isnan(tensor).any():
+                raise ValueError(f"!!! NAN DETECTED in {name} !!!")
+            if torch.isinf(tensor).any():
+                raise ValueError(f"!!! INF DETECTED in {name} !!!")
+
     def forward(self, scene_tokens):
         # scene_tokens: [B, Q, 512]
         B, Q, C = scene_tokens.shape
@@ -139,12 +146,15 @@ class GaussianDecoder(nn.Module):
         # Slice parameters and apply necessary activations
         # Positions: Add to token's base 3D coordinate (if applicable) or use directly
         means = gaussians[..., 0:3] 
+        self.check_nan(means, "Means")
         
         # Scales must be strictly positive
         scales = torch.exp(gaussians[..., 3:6]) 
+        self.check_nan(scales, "Scales")
         
         # Quaternions must be normalized
         rotations = torch.nn.functional.normalize(gaussians[..., 6:10], dim=-1)
+        self.check_nan(rotations, "Rotations")
         
         # # Opacity must be between 0 and 1
         # opacities = torch.sigmoid(gaussians[..., 10:11]).squeeze(-1)
