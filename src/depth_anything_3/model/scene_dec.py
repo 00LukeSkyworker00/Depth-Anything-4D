@@ -43,10 +43,22 @@ class SceneDecoder(nn.Module):
             nn.Linear(hid_dim, hid_dim)
         )
         self.proj_patch = nn.Linear(dim_in, hid_dim)
-        self.resize_patch =  nn.ConvTranspose2d(hid_dim, hid_dim, kernel_size=token_resize, stride=token_resize, padding=0)
+        self.resize_patch = nn.Identity()
+        if token_resize > 0:
+            scale = token_resize
+            self.resize_patch = nn.ConvTranspose2d(
+                hid_dim, hid_dim, kernel_size=scale, 
+                stride=scale, padding=0
+            )
+        elif token_resize < 0:
+            scale = -token_resize
+            self.resize_patch = nn.Conv2d(
+                hid_dim, hid_dim, kernel_size=scale*2+1,
+                stride=scale, padding=scale
+            )
         self.base_tokens = base_tokens
 
-        self.cross_attn = CrossAttnLayer(
+        self.token_decoder = CrossAttnLayer(
             d_model=hid_dim,
             nhead=8,
             dim_feedforward=2048,
@@ -55,6 +67,15 @@ class SceneDecoder(nn.Module):
             batch_first=True,
             norm_first=True
         )
+        # self.token_decoder = nn.TransformerDecoderLayer(
+        #     d_model=hid_dim,
+        #     nhead=8,
+        #     dim_feedforward=2048,
+        #     dropout=0.0,
+        #     activation='gelu',
+        #     batch_first=True,
+        #     norm_first=True
+        # )
 
         self.decoder = GaussianDecoder(
             d_model=hid_dim,
@@ -89,7 +110,7 @@ class SceneDecoder(nn.Module):
 
         for i in range(patch_token.shape[0]):
             for _ in range(self.iters_per_frame):
-                scene_token = self.cross_attn(
+                scene_token = self.token_decoder(
                     tgt=scene_token,
                     memory=patch_token[i]
                 )   #(B, S*P, hid)
@@ -109,10 +130,12 @@ class SceneDecoder(nn.Module):
         return x + pe
 
 class GaussianDecoder(nn.Module):
-    def __init__(self, d_model=512, gs_per_token=4, gs_dim=7):
+    def __init__(self, d_model=512, gs_per_token=4, gs_params=['pos','scale','rot','opac','col']):
         super().__init__()
         self.K = gs_per_token
-        self.num_gs_params = gs_dim
+        GS_DIMS = {"pos": 3,"scale": 3,"rot": 4,"opacity": 1,"col": 3,}
+        self.gs_params = gs_params
+        self.num_gs_params = sum(GS_DIMS[name] for name in gs_params)
         out_dim = self.K * self.num_gs_params
         
         # A strong 3-layer MLP is usually sufficient here
@@ -125,6 +148,7 @@ class GaussianDecoder(nn.Module):
             nn.GELU(),
             nn.Linear(d_model, out_dim)
         )
+        self.pad = nn.ConstantPad1d(14,1.0)
 
     def check_nan(self, tensor:torch.Tensor, name:str):
         if torch.is_floating_point(tensor):
@@ -135,34 +159,42 @@ class GaussianDecoder(nn.Module):
 
     def forward(self, scene_tokens):
         # scene_tokens: [B, Q, 512]
-        B, Q, C = scene_tokens.shape
+        B, Q, _ = scene_tokens.shape
         
-        # Output: [B, Q, K * 14]
+        # Output: [B, Q, K * N]
         raw_gaussians = self.mlp(scene_tokens)
         
-        # Reshape to distinct Gaussians: [B, Q * K, 14]
+        # Reshape to distinct Gaussians and pad to correct dim: [B, Q * K, 14]
         gaussians = raw_gaussians.view(B, Q * self.K, self.num_gs_params)
+        gaussians = self.pad(gaussians)
+        self.check_nan(gaussians, "Gaussians")
         
         # Slice parameters and apply necessary activations
-        # Positions: Add to token's base 3D coordinate (if applicable) or use directly
-        means = gaussians[..., 0:3] 
-        self.check_nan(means, "Means")
+        (
+            means,
+            scales,
+            rotations,
+            opacities,
+            colors
+        ) = torch.split(gaussians, (3,3,4,1,3))
+        opacities = opacities.squeeze(-1)   # Squeeze last dim for opac.
+        colors = colors.unsqueeze(-1)       # Unsqueeze last dim for SH
         
         # Scales must be strictly positive
-        scales = torch.exp(gaussians[..., 3:6]) 
-        self.check_nan(scales, "Scales")
+        if 'scale' in self.gs_params:
+            scales = torch.exp(scales) 
         
         # Quaternions must be normalized
-        rotations = torch.nn.functional.normalize(gaussians[..., 6:10], dim=-1)
-        self.check_nan(rotations, "Rotations")
+        if 'rot' in self.gs_params:
+            rotations = F.normalize(rotations)
         
-        # # Opacity must be between 0 and 1
-        # opacities = torch.sigmoid(gaussians[..., 10:11]).squeeze(-1)
-        opacities = torch.ones_like(gaussians[..., 0].detach(), requires_grad=False)
+        # Opacity must be between 0 and 1
+        if 'opac' in self.gs_params:
+            opacities = torch.sigmoid(opacities)
         
-        # # Color (Spherical Harmonics DC band) can be sigmoid for standard RGB
-        # colors = torch.sigmoid(gaussians[..., 11:14]).unsqueeze(-1)
-        colors = torch.ones_like(gaussians[..., :3].detach(), requires_grad=False).unsqueeze(-1)
+        # Color (Spherical Harmonics DC band) can be sigmoid for standard RGB
+        if 'col' in self.gs_params:
+            colors = torch.sigmoid(colors)
         
         return Gaussians(
             means=means,
@@ -171,7 +203,6 @@ class GaussianDecoder(nn.Module):
             harmonics=colors,
             opacities=opacities
         )
-
 
 class CrossAttnLayer(nn.Module):
     __constants__ = ["norm_first"]

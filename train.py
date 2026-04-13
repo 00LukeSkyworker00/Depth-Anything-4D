@@ -137,9 +137,11 @@ def process(rank, args):
 
     # Setup logger
     if is_main_rank:
-        logger = Logger(args, device, train_dataloader, val_dataloader)
+        train_sample = train_dataloader.dataset[0]
+        val_sample = val_sample.dataset[0]
+        logger = Logger(args, device, train_sample, val_sample)
     else:
-        logger = LoggerBase(args, device, train_dataloader, val_dataloader)
+        logger = LoggerBase(args, device, None, None)
 
     # Create optimizer
     params = [{'params': model.parameters()}]
@@ -182,7 +184,10 @@ def process(rank, args):
         # ssim_loss = reduce_loss(ssim_loss) if is_reduce else ssim_loss
         # loss += ssim_loss
         
-        depth_loss = F.l1_loss(output.gs_render[1], output.depth)
+        depth_mask = output.conf > 1.0
+        depth_pred = output.gs_render[1][depth_mask]
+        depth_gt = output.depth[depth_mask]
+        depth_loss = F.l1_loss(depth_pred, depth_gt)
         depth_loss *= depth_lambda
         depth_loss = reduce_loss(depth_loss) if is_reduce else depth_loss
         loss += depth_loss
@@ -191,7 +196,6 @@ def process(rank, args):
             # 'recon': recon_loss.item(),
             # 'ssim': ssim_loss.item(),
             'depth': depth_loss.item(),
-            'total': loss.item()
             }
         return loss, loss_dict
 

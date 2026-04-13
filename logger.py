@@ -17,7 +17,7 @@ from depth_anything_3.utils.gsply_helpers import export_ply
 from depth_anything_3.specs import Gaussians
 
 class LoggerBase():
-    def __init__(self, args, device, train_ds, val_ds):
+    def __init__(self, args, device, train_sample, val_sample):
         pass
 
     def save_env(self, args, config:Union[DictConfig, ListConfig]):
@@ -51,7 +51,7 @@ class LoggerBase():
         pass
 
 class Logger(LoggerBase):
-    def __init__(self, args, device, train_ds, val_ds, inference:bool=False):
+    def __init__(self, args, device, train_sample, val_sample, inference:bool=False):
         if inference:
             assert os.path.exists(args.out_dir), f"out_dir not found: {args.out_dir}"
             assert os.path.exists(args.ckpt_pth), f"ckpt_pth not found: {args.ckpt_pth}"
@@ -81,8 +81,8 @@ class Logger(LoggerBase):
         self.wandb_run.define_metric("Train/*", step_metric="Train_step", hidden=True)
         self.wandb_run.define_metric("Val/*", step_metric="Val_step", hidden=True)
 
-        self.train_vis = next(iter(train_ds))
-        self.val_vis = next(iter(val_ds))
+        self.train_vis = train_sample
+        self.val_vis = val_sample
 
         self.start_time = time.time()
         self.best_loss = float('inf')
