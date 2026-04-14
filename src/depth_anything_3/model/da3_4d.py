@@ -233,7 +233,7 @@ class DepthAnything3Net(nn.Module):
             
         return output
 
-    def render_gs(self, output, raw_gs):
+    def render_gs(self, output, raw_gs, chunk_size:int=1):
         ext = output.extrinsics
         ixt = output.intrinsics
         colors, depths = run_renderer_in_chunk_w_trj_mode(
@@ -241,7 +241,7 @@ class DepthAnything3Net(nn.Module):
             extrinsics=ext,
             intrinsics=ixt,
             image_shape=(504,504),
-            # chunk_size=None,
+            chunk_size=chunk_size,
             trj_mode='original',
             use_sh=False,
         )

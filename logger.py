@@ -146,9 +146,9 @@ class Logger(LoggerBase):
     def log_viz(self, model:nn.Module, epoch, mode='Train'):
         # Visualize and save results
         if mode=='Train':
-            x = self.train_vis['img'][:1].to(self.device)
+            x = self.train_vis['img'][None,].to(self.device)
         else:
-            x = self.val_vis['img'][:1].to(self.device)
+            x = self.val_vis['img'][None,].to(self.device)
 
         out = model(
             image=x, extrinsics=None, intrinsics=None,
@@ -168,10 +168,17 @@ class Logger(LoggerBase):
         img = x[0].detach()
         img = (img - img.min()) / (img.max() - img.min() + 1e-8)
         gs_render = out.gs_render[0][0].detach()
-        depth = out.depth[0].unsqueeze(-3).repeat(1,3,1,1).detach()
-        depth_render = out.gs_render[1][0].unsqueeze(-3).repeat(1,3,1,1).detach()
+        depth = out.depth[0].unsqueeze(-3).repeat(1,3,1,1)
+        depth_render = out.gs_render[1][0].unsqueeze(-3).repeat(1,3,1,1)
+        depth = self.min_max_norm(depth).detach()
+        depth_render = self.min_max_norm(depth_render).detach()
         vid = torch.stack([img, gs_render,depth,depth_render])
         return vid
+
+    def min_max_norm(self, x:torch.Tensor):
+        min = x.min()
+        max = x.max()
+        return (x - min)/(max-min)
 
     def save_model(self, model:nn.Module, optimizer:torch.optim.Optimizer, epoch):
         last = {

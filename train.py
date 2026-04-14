@@ -61,12 +61,8 @@ def save_env(out_dir:str):
     for file in python_pth:
         shutil.copy(file, out_dir)
 
-def cleanup(rank):    
-    try:
-        destroy_process_group()
-    except:
-        pass
-    # print(f"Process {rank} cleaned up.")
+def cleanup():
+    destroy_process_group()
 
 def Trainer(rank, args):
     set_rnd_seed(args.seed)
@@ -138,7 +134,7 @@ def process(rank, args):
     # Setup logger
     if is_main_rank:
         train_sample = train_dataloader.dataset[0]
-        val_sample = val_sample.dataset[0]
+        val_sample = val_dataloader.dataset[0]
         logger = Logger(args, device, train_sample, val_sample)
     else:
         logger = LoggerBase(args, device, None, None)
@@ -184,9 +180,16 @@ def process(rank, args):
         # ssim_loss = reduce_loss(ssim_loss) if is_reduce else ssim_loss
         # loss += ssim_loss
         
-        depth_mask = output.conf > 1.0
-        depth_pred = output.gs_render[1][depth_mask]
-        depth_gt = output.depth[depth_mask]
+        depth_pred:torch.Tensor = output.gs_render[1]
+        depth_gt:torch.Tensor = output.depth
+        
+        depth_mask:torch.Tensor = output.depth_conf > 1.0
+        depth_pred = depth_pred[depth_mask]
+        depth_gt = depth_gt[depth_mask]
+        
+        depth_pred = depth_pred.log()
+        depth_gt = depth_gt.log()
+
         depth_loss = F.l1_loss(depth_pred, depth_gt)
         depth_loss *= depth_lambda
         depth_loss = reduce_loss(depth_loss) if is_reduce else depth_loss

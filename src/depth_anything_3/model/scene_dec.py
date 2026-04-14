@@ -25,7 +25,7 @@ class SceneDecoder(nn.Module):
             base_tokens:int=200, 
             iters_per_frame:int=1,
             out_layers:list[int]=[],
-            gs_dim:int=7,
+            gs_params:list[str]=['pos','scale','rot','opac','col'],
             out_growth:int=4
         ):
         super().__init__()
@@ -44,7 +44,7 @@ class SceneDecoder(nn.Module):
         )
         self.proj_patch = nn.Linear(dim_in, hid_dim)
         self.resize_patch = nn.Identity()
-        if token_resize > 0:
+        if token_resize > 1:
             scale = token_resize
             self.resize_patch = nn.ConvTranspose2d(
                 hid_dim, hid_dim, kernel_size=scale, 
@@ -80,7 +80,7 @@ class SceneDecoder(nn.Module):
         self.decoder = GaussianDecoder(
             d_model=hid_dim,
             gs_per_token=out_growth,
-            gs_dim=gs_dim
+            gs_params=gs_params
         )
 
     def forward(self, readout:Tensor, patch:Tensor, H:int, W:int):
@@ -148,7 +148,10 @@ class GaussianDecoder(nn.Module):
             nn.GELU(),
             nn.Linear(d_model, out_dim)
         )
-        self.pad = nn.ConstantPad1d(14,1.0)
+        if self.num_gs_params != 14 :
+            self.pad = nn.ConstantPad1d((0,14-self.num_gs_params),1.0)
+        else:
+            self.pad = nn.Identity()
 
     def check_nan(self, tensor:torch.Tensor, name:str):
         if torch.is_floating_point(tensor):
@@ -176,7 +179,7 @@ class GaussianDecoder(nn.Module):
             rotations,
             opacities,
             colors
-        ) = torch.split(gaussians, (3,3,4,1,3))
+        ) = torch.split(gaussians, (3,3,4,1,3), dim=-1)
         opacities = opacities.squeeze(-1)   # Squeeze last dim for opac.
         colors = colors.unsqueeze(-1)       # Unsqueeze last dim for SH
         

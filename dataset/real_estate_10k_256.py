@@ -25,7 +25,7 @@ class RealEstate10K256(Dataset):
                 pths:PosixPath = val['video_paths']
                 val['video_paths'] = os.path.join(root,pths.relative_to("data/real-estate-10k"))
                 self.metadata.append(val)
-        clip = int(len(self.metadata) * 0.5)
+        clip = int(len(self.metadata) * 0.2)
         self. metadata = self.metadata[:clip]
         split = int(len(self.metadata) * 0.8)
         if not isVal:
