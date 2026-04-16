@@ -62,7 +62,8 @@ def save_env(out_dir:str):
         shutil.copy(file, out_dir)
 
 def cleanup():
-    destroy_process_group()
+    if dist.is_available() and dist.is_initialized():
+        destroy_process_group()
 
 def Trainer(rank, args):
     set_rnd_seed(args.seed)
@@ -72,13 +73,21 @@ def Trainer(rank, args):
 
     except KeyboardInterrupt:
         print(f"[Rank {rank}] KeyboardInterrupt", flush=True)
+        raise
 
     except Exception as e:
         print(f"[Rank {rank}] failed: {e}", flush=True)
         traceback.print_exc()
+        # Abort all workers immediately so mp.spawn does not hang in join().
+        if dist.is_available() and dist.is_initialized():
+            try:
+                dist.abort()
+            except Exception:
+                pass
+        raise
 
     finally:
-        cleanup(rank)
+        cleanup()
 
 
 def process(rank, args):
@@ -238,7 +247,7 @@ def process(rank, args):
                 loss.backward()
                 optimizer.step()
                 scheduler.step()
-                logger.plt_lr(scheduler.get_last_lr(), step)
+                logger.plt_lr(scheduler.get_last_lr()[0], step)
         else:
             raise ValueError("loss is None")
 

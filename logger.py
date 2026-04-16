@@ -61,9 +61,12 @@ class Logger(LoggerBase):
         timestamp = datetime.today().isoformat()
         self.out_dir = os.path.join(args.out_dir, timestamp)
         self.log_dir = os.path.join(self.out_dir, 'logs')
-        self.ckpt_pth = os.path.join(self.out_dir,'ckpts')
         os.makedirs(self.log_dir, exist_ok=False)
-        os.makedirs(self.ckpt_pth, exist_ok=False)
+        
+        ckpt_dir = os.path.join(self.out_dir,'ckpts')
+        os.makedirs(ckpt_dir, exist_ok=False)
+        self.best_pth = os.path.join(ckpt_dir,'best.pt')
+        self.last_pth = os.path.join(ckpt_dir,'last.pt.tar')
         print(f"Output Directory: {self.out_dir}")
 
         self.device = device
@@ -105,8 +108,8 @@ class Logger(LoggerBase):
         print(f"{prefix_msg}| Time: {duration:.2f}s")
 
     def plt_lr(self, lr:torch.Tensor, step:int):
-        self.writer.add_scalars('Learn Rate', {'value': lr[0]}, step)
-        self.wandb_run.log({"Train/lr": lr, "Train_step": step})
+        self.writer.add_scalar('Optimizer/lr', lr, step)
+        self.wandb_run.log({"Optimizer/lr": lr, "Train_step": step})
 
     def record_loss(self, d: dict[str, float]):
         self.loss_dict.update(d)
@@ -187,9 +190,9 @@ class Logger(LoggerBase):
             'epoch':epoch,
             'best_loss':self.best_loss
         }
-        torch.save(last, os.path.join(self.ckpt_pth,'last.pt'))
+        torch.save(last, self.last_pth)
         if self.has_best:
-            torch.save(model.module.state_dict(),os.path.join(self.ckpt_pth,'best.pt'))
+            torch.save(model.module.state_dict(), self.best_pth)
             self.has_best = False
     
     def export_gsplat(self, gsplat:Gaussians, file_name='gsplat.ply'):
@@ -205,6 +208,21 @@ class Logger(LoggerBase):
         )
 
     def cleanup(self):
+        artifact_best = wandb.Artifact("best", type="model")
+        artifact_best.add_file(self.best_pth)
+        artifact_best.ttl = None
+        self.wandb_run.log_artifact(artifact_best)
+
+        artifact_ckpt = wandb.Artifact("ckpt", type="checkpoint")
+        artifact_ckpt.add_file(self.last_pth)
+        artifact_ckpt.ttl = None
+        self.wandb_run.log_artifact(artifact_ckpt)
+
+        artifact_log = wandb.Artifact("tensorboard", type="log")
+        artifact_log.add_dir(self.log_dir)
+        artifact_log.ttl = None
+        self.wandb_run.log_artifact(artifact_log)
+
         self.writer.close()
         self.wandb_run.finish()
 

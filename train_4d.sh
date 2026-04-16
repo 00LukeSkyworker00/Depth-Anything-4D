@@ -4,5 +4,5 @@ python train.py \
     --out-dir /home/skyworker/result/da3_4d \
     --batch 4 \
     --ep-len 3 \
-    --epoch 30 \
-    --max-lr 0.00002 \
+    --epoch 50 \
+    --max-lr 0.00005 \
