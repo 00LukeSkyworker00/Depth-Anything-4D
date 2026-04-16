@@ -192,12 +192,12 @@ def process(rank, args):
         depth_pred:torch.Tensor = output.gs_render[1]
         depth_gt:torch.Tensor = output.depth
         
-        depth_mask:torch.Tensor = output.depth_conf > 1.0
-        depth_pred = depth_pred[depth_mask]
-        depth_gt = depth_gt[depth_mask]
+        # depth_mask:torch.Tensor = output.depth_conf > 1.0
+        # depth_pred = depth_pred[depth_mask]
+        # depth_gt = depth_gt[depth_mask]
         
-        depth_pred = depth_pred.log()
-        depth_gt = depth_gt.log()
+        # depth_pred = depth_pred.log()
+        # depth_gt = depth_gt.log()
 
         depth_loss = F.l1_loss(depth_pred, depth_gt)
         depth_loss *= depth_lambda
