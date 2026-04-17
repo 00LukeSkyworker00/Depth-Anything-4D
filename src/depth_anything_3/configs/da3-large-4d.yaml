@@ -82,10 +82,10 @@ scene_head:
     args: as_params
 
   dim_in: *head_dim_in
-  hid_dim: [512]
-  token_resize: [2]
-  base_tokens: 800
+  hid_dim: [128,256,512,1024]
+  token_resize: [8,4,2,1]
+  base_tokens: 200
   iters_per_frame: 1
-  out_layers: [3]
+  out_layers: [0,1,2,3]
   gs_per_token: 8
   gs_params: ['pos','scale','rot']  # 'pos','scale','rot','opac','col'

@@ -23,9 +23,9 @@ class DualSceneDecoder(nn.Module):
 
         for i in range(len(hid_dim)):
             if token_resize[i] >= 0:
-                out_growth=gs_per_token*token_resize[i]
+                out_growth=gs_per_token//token_resize[i]
             else:
-                out_growth=-gs_per_token//token_resize[i]
+                out_growth=-gs_per_token*token_resize[i]
             dec = SceneDecoder(
                 dim_in=dim_in, hid_dim=hid_dim[i], token_resize=token_resize[i], 
                 base_tokens=base_tokens, iters_per_frame=iters_per_frame, 

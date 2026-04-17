@@ -150,7 +150,7 @@ def process(rank, args):
 
     # Create optimizer
     params = [{'params': model.parameters()}]
-    optimizer = optim.AdamW(params, lr=0)
+    optimizer = optim.Adam(params, lr=0)
 
     # Create schedular
     max_lr = args.max_lr * args.world_size

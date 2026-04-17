@@ -5,4 +5,4 @@ python train.py \
     --batch 4 \
     --ep-len 3 \
     --epoch 50 \
-    --max-lr 0.00005 \
+    --max-lr 0.00002 \
