@@ -169,46 +169,69 @@ def process(rank, args):
     logger.save_env(args, model.module.config)
     logger_print(f"Training scripts backup to folder.")
 
+    def depth_grad(d):
+        dx = d[..., :, 1:] - d[..., :, :-1]
+        dy = d[..., 1:, :] - d[..., :-1, :]
+        return dx, dy
+
+    def weighted_mean(x, w, eps=1e-6):
+        return (x * w).sum() / (w.sum() + eps)
+
     def compute_loss(output, img, is_reduce:bool=False):
-        """Compute loss from model output."""
         if not hasattr(output, 'gs_render') or output.gs_render is None:
             return None, {}
-        
-        loss = 0
 
-        ssim_lambda = 0.2
-        depth_lambda = 5e-2
-        
-        # recon_loss = F.l1_loss(output.gs_render[0], img)
-        # recon_loss *= (1.0 - ssim_lambda)
-        # recon_loss = reduce_loss(recon_loss) if is_reduce else recon_loss
-        # loss += recon_loss
-        
-        # ssim_loss = 1.0 - fused_ssim(output.gs_render[0], img)
-        # ssim_loss *= ssim_lambda
-        # ssim_loss = reduce_loss(ssim_loss) if is_reduce else ssim_loss
-        # loss += ssim_loss
-        
-        depth_pred:torch.Tensor = output.gs_render[1]
-        depth_gt:torch.Tensor = output.depth
-        
-        # depth_mask:torch.Tensor = output.depth_conf > 1.0
-        # depth_pred = depth_pred[depth_mask]
-        # depth_gt = depth_gt[depth_mask]
-        
-        # depth_pred = depth_pred.log()
-        # depth_gt = depth_gt.log()
+        loss_weight = {
+            'recon': 0.0,
+            'ssim': 0.0,
+            'depth': 0.05,
+            'log_depth': 0.00,
+            'grad_depth': 0.00,
+        }
 
-        depth_loss = F.l1_loss(depth_pred, depth_gt)
-        depth_loss *= depth_lambda
-        depth_loss = reduce_loss(depth_loss) if is_reduce else depth_loss
-        loss += depth_loss
-        
-        loss_dict = {
-            # 'recon': recon_loss.item(),
-            # 'ssim': ssim_loss.item(),
-            'depth': depth_loss.item(),
-            }
+        color_pred, depth_pred = output.gs_render
+        depth_teacher = output.depth.detach()
+        conf = output.depth_conf.detach()
+
+        w = conf.clamp(min=0.0)
+        w = w / (w.mean() + 1e-6)
+
+        loss = 0.0
+        loss_dict = {}
+
+        def append_loss(name:str, loss_tensor:torch.Tensor):
+            nonlocal loss, loss_dict
+            loss += loss_weight[name] * loss_tensor
+            loss_tensor = reduce_loss(loss_tensor) if is_reduce else loss_tensor
+            loss_dict[name] = loss_tensor.item()
+
+        if 'recon' in loss_weight and loss_weight['recon'] > 0:
+            recon = F.l1_loss(color_pred, img)
+            append_loss('recon', recon)
+
+        if 'ssim' in loss_weight and loss_weight['ssim'] > 0:
+            ssim = 1.0 - fused_ssim(color_pred, img)
+            append_loss('ssim', ssim)
+
+        if 'depth' in loss_weight and loss_weight['depth'] > 0:
+            depth = weighted_mean((depth_pred - depth_teacher).abs(), w)
+            append_loss('depth', depth)
+
+        if 'log_depth' in loss_weight and loss_weight['log_depth'] > 0:
+            log_depth = weighted_mean(
+                (torch.log(depth_pred.clamp_min(1e-6)) - torch.log(depth_teacher.clamp_min(1e-6))).abs(),
+                w
+            )
+            append_loss('log_depth', log_depth)
+
+        if 'grad_depth' in loss_weight and loss_weight['grad_depth'] > 0:
+            dx_p, dy_p = depth_grad(depth_pred)
+            dx_t, dy_t = depth_grad(depth_teacher)
+            wdx = w[..., :, 1:]
+            wdy = w[..., 1:, :]
+            grad_loss = weighted_mean((dx_p - dx_t).abs(), wdx) + weighted_mean((dy_p - dy_t).abs(), wdy)
+            append_loss('grad_depth', grad_loss)
+
         return loss, loss_dict
 
     def reduce_loss(loss:torch.Tensor):
