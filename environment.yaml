@@ -1,0 +1,52 @@
+name: da3
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - ipykernel
+  - ffmpeg
+  - pip:
+      # Match current da3 CUDA torch stack.
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.9.0+cu128
+      - torchvision==0.24.0+cu128
+      - torchaudio==2.9.0+cu128
+      - xformers==0.0.33.post1
+
+      # Core project dependencies (merged from pyproject.toml and requirements.txt).
+      - trimesh
+      - einops
+      - huggingface_hub
+      - imageio
+      - numpy<2
+      - opencv-python
+      - open3d
+      - fastapi
+      - uvicorn
+      - requests
+      - typer>=0.9.0
+      - pillow>=9.0
+      - omegaconf
+      - evo
+      - e3nn
+      - moviepy==1.0.3
+      - plyfile
+      - pillow_heif
+      - safetensors
+      - pycolmap
+
+      # Streaming dependencies.
+      - faiss-gpu
+      - pandas
+      - prettytable
+      - numba
+      - pypose
+
+      # Optional extras selected for this unified environment.
+      - gradio>=5
+      - gsplat @ git+https://github.com/nerfstudio-project/gsplat.git@0b4dddf04cb687367602c01196913cde6a743d70
+
+      # Install this repository package into the environment.
+      - -e .
