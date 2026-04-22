@@ -46,7 +46,8 @@ dependencies:
 
       # Optional extras selected for this unified environment.
       - gradio>=5
-      - gsplat @ git+https://github.com/nerfstudio-project/gsplat.git@0b4dddf04cb687367602c01196913cde6a743d70
-
+      # Install gsplat manually using --no-build-isolation to avoid dependency conflicts with the main environment.
+      # - gsplat @ git+https://github.com/nerfstudio-project/gsplat.git@0b4dddf04cb687367602c01196913cde6a743d70
+      
       # Install this repository package into the environment.
       - -e .
