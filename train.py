@@ -73,6 +73,11 @@ def Trainer(rank, args):
 
     except KeyboardInterrupt:
         print(f"[Rank {rank}] KeyboardInterrupt", flush=True)
+        if dist.is_available() and dist.is_initialized():
+            try:
+                dist.abort()
+            except Exception:
+                pass
         raise
 
     except Exception as e:
@@ -187,9 +192,16 @@ def process(rank, args):
             'depth': 0.05,
             'log_depth': 0.00,
             'grad_depth': 0.00,
+            'contrib': 0.01,
+            'spread': 0.00,
         }
 
-        color_pred, depth_pred = output.gs_render
+        (color_pred, depth_pred, contrib_loss, spread_loss) = (
+            output.gs_render["colors"], 
+            output.gs_render["depths"], 
+            output.gs_render["contrib_loss"],
+            output.gs_render["spread_loss"]
+        )
         depth_teacher = output.depth.detach()
         conf = output.depth_conf.detach()
 
@@ -201,6 +213,8 @@ def process(rank, args):
 
         def append_loss(name:str, loss_tensor:torch.Tensor):
             nonlocal loss, loss_dict
+            if name not in loss_weight or loss_weight[name] <= 0:
+                return
             loss += loss_weight[name] * loss_tensor
             loss_tensor = reduce_loss(loss_tensor) if is_reduce else loss_tensor
             loss_dict[name] = loss_tensor.item()
@@ -231,6 +245,9 @@ def process(rank, args):
             wdy = w[..., 1:, :]
             grad_loss = weighted_mean((dx_p - dx_t).abs(), wdx) + weighted_mean((dy_p - dy_t).abs(), wdy)
             append_loss('grad_depth', grad_loss)
+        
+        append_loss('contrib', contrib_loss)
+        append_loss('spread', spread_loss)
 
         return loss, loss_dict
 

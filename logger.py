@@ -159,23 +159,34 @@ class Logger(LoggerBase):
             use_ray_pose=False, ref_view_strategy="saddle_balanced"
         )
         vid = self.construct_vis(x, out).cpu()
-        self.writer.add_video(f'{mode}/Visualization',vid, epoch)        
+        self.writer.add_video(f'{mode}/Visualization',vid, epoch)
+
+        # Visualize contribution
+        contrib_vis = out.gs_render['contrib_vis'][0].detach()
+        in_band = out.gs_render['in_band'][0].detach().mean()
+        self.writer.add_histogram(f'{mode}/contrib_vis', contrib_vis, epoch)
+        self.writer.add_scalar(f'{mode}/contrib_in_band', in_band.item(), epoch)
+
+        # Log to WanDB
         self.wandb_run.log({
             f'{mode}/Visualization': wandb.Video((vid*255.0).clip(0,255), fps=4, format="gif"),
+            f'{mode}/contrib_vis': wandb.Histogram(contrib_vis.cpu().numpy()),
+            f'{mode}/contrib_in_band': in_band.item(),
             f'{mode}_step': epoch
         })
+
         if mode == 'Val':
             self.export_gsplat(out.gs, f'{epoch:04}_Val.ply')
     
     def construct_vis(self, x:torch.Tensor, out:dict):
         img = x[0].detach()
         img = (img - img.min()) / (img.max() - img.min() + 1e-8)
-        gs_render = out.gs_render[0][0].detach()
+        gs_render = out.gs_render['colors'][0].detach()
         depth = out.depth[0].unsqueeze(-3).repeat(1,3,1,1)
-        depth_render = out.gs_render[1][0].unsqueeze(-3).repeat(1,3,1,1)
+        depth_render = out.gs_render['depths'][0].unsqueeze(-3).repeat(1,3,1,1)
         depth = self.min_max_norm(depth).detach()
         depth_render = self.min_max_norm(depth_render).detach()
-        vid = torch.stack([img, gs_render,depth,depth_render])
+        vid = torch.stack([img, gs_render, depth, depth_render])
         return vid
 
     def min_max_norm(self, x:torch.Tensor):

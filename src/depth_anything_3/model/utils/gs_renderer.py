@@ -89,6 +89,9 @@ def render_3dgs(
 
     all_images = []
     all_radii = []
+    all_means2d = []
+    all_conics = []
+    all_opacities = []
     all_depths = []
     # render view in a batch based, each batch contains one scene
     # assume the Gaussian parameters are originally repeated along the view dim
@@ -142,6 +145,9 @@ def render_3dgs(
 
         image = rearrange(render_colors[..., :3], "v h w c -> v c h w").unbind(dim=0)
         radii = info["radii"].unbind(dim=0)
+        means2d = info["means2d"].unbind(dim=0)
+        conics = info["conics"].unbind(dim=0)
+        opacities = info["opacities"].unbind(dim=0)
         try:
             info["means2d"].retain_grad()  # [1, N, 2]
         except Exception:
@@ -149,8 +155,15 @@ def render_3dgs(
         all_images.extend(image)
         all_depths.extend(depth)
         all_radii.extend(radii)
+        all_means2d.extend(means2d)
+        all_conics.extend(conics)
+        all_opacities.extend(opacities)
 
-    return torch.stack(all_images), torch.stack(all_depths)
+    return (
+        torch.stack(all_images), torch.stack(all_depths), 
+        torch.stack(all_radii), torch.stack(all_means2d), 
+        torch.stack(all_conics), torch.stack(all_opacities)
+    )
 
 
 def run_renderer_in_chunk_w_trj_mode(
@@ -171,10 +184,12 @@ def run_renderer_in_chunk_w_trj_mode(
     ] = "smooth",
     input_shape: Optional[tuple[int, int]] = None,
     enable_tqdm: Optional[bool] = False,
+    return_meta: Optional[bool] = False,
     **kwargs,
 ) -> tuple[
     torch.Tensor,  # color, "batch view 3 height width"
     torch.Tensor,  # depth, "batch view height width"
+    dict,  # optional meta info, e.g. {"radii": ..., "means2d": ..., "conics": ..., "opacities": ...}
 ]:
     cam2world = affine_inverse(as_homogeneous(extrinsics))
     if input_shape is not None:
@@ -315,6 +330,10 @@ def run_renderer_in_chunk_w_trj_mode(
     chunk_size = min(v, chunk_size)
     all_colors = []
     all_depths = []
+    all_radii = []
+    all_means2d = []
+    all_conics = []
+    all_opacities = []
     for chunk_idx in tqdm(
         range(math.ceil(v / chunk_size)),
         desc="Rendering novel views",
@@ -324,7 +343,14 @@ def run_renderer_in_chunk_w_trj_mode(
         s = int(chunk_idx * chunk_size)
         e = int((chunk_idx + 1) * chunk_size)
         cur_n_view = tgt_extr[:, s:e].shape[1]
-        color, depth = render_3dgs(
+        (
+            color,
+            depth,
+            radii,
+            means2d,
+            conics,
+            opacities,
+        ) = render_3dgs(
             extrinsics=rearrange(tgt_extr[:, s:e], "b v ... -> (b v) ..."),  # w2c
             intrinsics=rearrange(tgt_intr[:, s:e], "b v ... -> (b v) ..."),  # normed
             image_shape=image_shape,
@@ -334,7 +360,23 @@ def run_renderer_in_chunk_w_trj_mode(
         )
         all_colors.append(rearrange(color, "(b v) ... -> b v ...", v=cur_n_view))
         all_depths.append(rearrange(depth, "(b v) ... -> b v ...", v=cur_n_view))
+        all_radii.append(rearrange(radii, "(b v) ... -> b v ...", v=cur_n_view))
+        all_means2d.append(rearrange(means2d, "(b v) ... -> b v ...", v=cur_n_view))
+        all_conics.append(rearrange(conics, "(b v) ... -> b v ...", v=cur_n_view))
+        all_opacities.append(rearrange(opacities, "(b v) ... -> b v ...", v=cur_n_view))
     all_colors = torch.cat(all_colors, dim=1)
     all_depths = torch.cat(all_depths, dim=1)
+    all_radii = torch.cat(all_radii, dim=1)
+    all_means2d = torch.cat(all_means2d, dim=1)
+    all_conics = torch.cat(all_conics, dim=1)
+    all_opacities = torch.cat(all_opacities, dim=1)
 
-    return all_colors, all_depths
+    if return_meta:
+        return all_colors, all_depths, {
+            "radii": all_radii,
+            "means2d": all_means2d,
+            "conics": all_conics,
+            "opacities": all_opacities,
+        }
+    else:
+        return all_colors, all_depths

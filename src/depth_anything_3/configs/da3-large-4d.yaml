@@ -89,3 +89,11 @@ scene_head:
   out_layers: [0,1,2,3]
   gs_per_token: 8
   gs_params: ['pos','scale','rot']  # 'pos','scale','rot','opac','col'
+
+rasterize_cfg:
+  chunk_size: 1
+  area_target: 1.0
+  area_tau: 0.5
+  spread_target: 0.03
+  contrib_min: 1e-4
+  contrib_max: 1e-3
