@@ -238,29 +238,25 @@ class DepthAnything3Net(nn.Module):
         cam_layers = feats_layers[1]
         patch_layers = feats_layers[0]
 
-        raw_gs, _ = self.scene_head(
+        out_dict = self.scene_head(
             cam_layers = cam_layers, 
             patch_layers = patch_layers, 
             H = H, W = W,
-            concat_gs = False
         )
-        # output.scene = scene_token[-1]
-        render_layers = False
-        if isinstance(raw_gs, list):
-            raw_gs_layers = raw_gs
-            raw_gs = sum(raw_gs[1:], raw_gs[0])
-            output.gs_layers = raw_gs_layers
-            render_layers = True
+        # token_layers = out_dict["scene_tokens"]
+
+        gs_layers = out_dict["gaussians"]
+        raw_gs = sum(gs_layers[1:], gs_layers[0])
+        output.gs_layers = gs_layers
         output.gs = raw_gs
 
         if "extrinsics"  in output and "intrinsics" in output:
             gs_render = self.rasterize_gs(output, raw_gs, **self.rasterize_cfg)
             output.gs_render = gs_render
-            if render_layers:
-                output.gs_render_layers = []
-                for gs in raw_gs_layers:
-                    gs_render = self.rasterize_gs(output, gs, **self.rasterize_cfg)
-                    output.gs_render_layers.append(gs_render)
+            output.gs_render_layers = []
+            for gs in gs_layers:
+                gs_render = self.rasterize_gs(output, gs, **self.rasterize_cfg)
+                output.gs_render_layers.append(gs_render)
             
         return output
 
@@ -280,57 +276,57 @@ class DepthAnything3Net(nn.Module):
             return_meta=True
         )
         
-        # The contribution is calculated in log space for better numerical stability, 
-        # and is a combination of visibility, opacity, and projected area (conics) of the Gaussian splats.
-        radii = meta["radii"].float()           # [b,s,n,2]
-        r = radii.amax(dim=-1)                  # [b,s,n]
-        valid = (r > 0)
+        # # The contribution is calculated in log space for better numerical stability, 
+        # # and is a combination of visibility, opacity, and projected area (conics) of the Gaussian splats.
+        # radii = meta["radii"].float()           # [b,s,n,2]
+        # r = radii.amax(dim=-1)                  # [b,s,n]
+        # valid = (r > 0)
         
-        conics = meta["conics"].float()         # [b,s,n,3]
-        a, b, c = conics[..., 0], conics[..., 1], conics[..., 2]
-        det = (a * c - b * b).clamp_min(1e-6)
-        log_area = torch.log(det) * -0.5
-        log_area_clip = torch.log(torch.tensor(area_target))
-        area_gate = ((log_area - log_area_clip) / area_tau).sigmoid()
-        log_area_gate = torch.log(area_gate.clamp_min(1e-6))
+        # conics = meta["conics"].float()         # [b,s,n,3]
+        # a, b, c = conics[..., 0], conics[..., 1], conics[..., 2]
+        # det = (a * c - b * b).clamp_min(1e-6)
+        # log_area = torch.log(det) * -0.5
+        # log_area_clip = torch.log(torch.tensor(area_target))
+        # area_gate = ((log_area - log_area_clip) / area_tau).sigmoid()
+        # log_area_gate = torch.log(area_gate.clamp_min(1e-6))
 
-        opac = meta["opacities"].float()
-        log_alpha = torch.log(opac.clamp_min(1e-6))
+        # opac = meta["opacities"].float()
+        # log_alpha = torch.log(opac.clamp_min(1e-6))
 
-        log_contrib = log_alpha + log_area_gate
+        # log_contrib = log_alpha + log_area_gate
 
-        # Contribution loss encourages the model to produce Gaussian splats that 
-        # have a meaningful contribution to the final rendered image
-        log_tau_min = torch.log(log_contrib.new_tensor(contrib_min))
-        log_tau_max = torch.log(log_contrib.new_tensor(contrib_max))
-        contrib_loss = F.relu(log_tau_min - log_contrib) + F.relu(log_contrib - log_tau_max)
-        contrib_loss = (contrib_loss * valid.float()).sum() / (valid.sum() + 1e-6)
+        # # Contribution loss encourages the model to produce Gaussian splats that 
+        # # have a meaningful contribution to the final rendered image
+        # log_tau_min = torch.log(log_contrib.new_tensor(contrib_min))
+        # log_tau_max = torch.log(log_contrib.new_tensor(contrib_max))
+        # contrib_loss = F.relu(log_tau_min - log_contrib) + F.relu(log_contrib - log_tau_max)
+        # contrib_loss = (contrib_loss * valid.float()).sum() / (valid.sum() + 1e-6)
 
-        # Prepare a log_contrib just for monitoring, detached from the computational graph
-        contrib_vis = log_contrib.detach()
-        contrib_vis = torch.where(valid, log_contrib, torch.full_like(log_contrib, float('-inf')))
-        in_band = ((contrib_vis > log_tau_min) & (contrib_vis < log_tau_max)).float().mean(-1)
-        contrib_vis = torch.exp(contrib_vis)  # Convert back to linear space for visualization
+        # # Prepare a log_contrib just for monitoring, detached from the computational graph
+        # contrib_vis = log_contrib.detach()
+        # contrib_vis = torch.where(valid, log_contrib, torch.full_like(log_contrib, float('-inf')))
+        # in_band = ((contrib_vis > log_tau_min) & (contrib_vis < log_tau_max)).float().mean(-1)
+        # contrib_vis = torch.exp(contrib_vis)  # Convert back to linear space for visualization
 
-        # Spread of the 2D means can indicate how well the Gaussians are distributed across the image plane.
-        means2d = meta["means2d"].float()           # [b,s,n,2]
-        means2d_normed = (means2d - means2d.mean(dim=-2, keepdim=True)) / 504  # Centered and normalized
+        # # Spread of the 2D means can indicate how well the Gaussians are distributed across the image plane.
+        # means2d = meta["means2d"].float()           # [b,s,n,2]
+        # means2d_normed = (means2d - means2d.mean(dim=-2, keepdim=True)) / 504  # Centered and normalized
 
-        # spread_loss v1: Encourage the standard deviation of the 2D means to be above a certain threshold, 
-        # promoting a wider spread of Gaussians across the image plane.
-        std = means2d_normed.std(dim=-2)
-        std_loss = F.relu(0.2 - std).mean()
-        spread_loss = std_loss
+        # # spread_loss v1: Encourage the standard deviation of the 2D means to be above a certain threshold, 
+        # # promoting a wider spread of Gaussians across the image plane.
+        # std = means2d_normed.std(dim=-2)
+        # std_loss = F.relu(0.2 - std).mean()
+        # spread_loss = std_loss
 
-        # spread_loss v2: logdet will explode on start, commented out for later inspection
+        # # spread_loss v2: logdet will explode on start, commented out for later inspection
         # cov2d = means2d_normed.transpose(-1,-2) @ means2d_normed / (means2d_normed.shape[-2] - 1)
         # identity_eps = torch.eye(cov2d.shape[-1], device=cov2d.device) * 1e-6
         # _, logabsdet = torch.linalg.slogdet(cov2d + identity_eps)
         # logdet_target = torch.log(torch.tensor(spread_target**2))
         # spread_loss = F.relu(logdet_target - logabsdet).mean()  # Encourage spread-out means by maximizing the determinant of the covariance
 
-        # spread_loss v3: Encourage the covariance matrix of the 2D means to be close to a diagonal matrix 
-        # with a certain variance, promoting both spread and decorrelation of the Gaussians.
+        # # spread_loss v3: Encourage the covariance matrix of the 2D means to be close to a diagonal matrix 
+        # # with a certain variance, promoting both spread and decorrelation of the Gaussians.
         # cov_xy = cov2d[..., 0, 1]
         # decorrelation_loss = cov_xy.abs().mean()
         # spread_loss = std_loss + decorrelation_loss
@@ -338,10 +334,10 @@ class DepthAnything3Net(nn.Module):
         return {
             "colors": colors,
             "depths": depths,
-            "contrib_loss": contrib_loss,
-            "spread_loss": spread_loss,
-            "contrib_vis": contrib_vis,
-            "in_band": in_band
+            # "contrib_loss": contrib_loss,
+            # "spread_loss": spread_loss,
+            # "contrib_vis": contrib_vis,
+            # "in_band": in_band
         }
 
     def _process_raft_head(

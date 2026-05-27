@@ -5,19 +5,38 @@ from torch import Tensor
 
 from typing import Callable, Optional, Union
 
+class SlotInitializer(nn.Module):
+    def __init__(self, num_slots: int, slot_dim: int):
+        super().__init__()
+        self.num_slots = num_slots
+        self.slot_dim = slot_dim
+
+        # Parameters for Gaussian init, shared by all slots.
+        self.slots_mu = nn.Parameter(torch.empty(1, 1, slot_dim))
+        self.slots_log_sigma = nn.Parameter(torch.empty(1, 1, slot_dim))
+
+        nn.init.xavier_uniform_(self.slots_mu)
+        nn.init.xavier_uniform_(self.slots_log_sigma)
+
+    def forward(self, batch_size: int) -> Tensor:
+        mu = self.slots_mu.expand(batch_size, self.num_slots, -1)
+        sigma = torch.exp(self.slots_log_sigma).expand(batch_size, self.num_slots, -1)
+        slots = mu + sigma * torch.randn_like(mu)
+        return slots
+
 class SlotAttentionLayer(nn.Module):
     """
     PyTorch conversion of the official Google Research SlotAttention layer.
 
     Args:
         num_iterations: Number of attention refinement iterations.
-        num_slots: Number of slots.
         slot_dim: Dimensionality of slot feature vectors.
         mlp_hidden_dim: Hidden layer size of the per-slot MLP.
         epsilon: Offset for attention coefficients before normalization.
 
     Input:
-        inputs: [B, N, input_dim]
+        feats: [B, N, slot_dim]
+        slots: [B, num_slots, slot_dim]
 
     Output:
         slots: [B, num_slots, slot_dim]
@@ -26,7 +45,6 @@ class SlotAttentionLayer(nn.Module):
     def __init__(
         self,
         num_iterations: int,
-        num_slots: int,
         slot_dim: int,
         mlp_hidden_dim: int,
         epsilon: float = 1e-8,
@@ -34,28 +52,13 @@ class SlotAttentionLayer(nn.Module):
         super().__init__()
 
         self.num_iterations = num_iterations
-        self.num_slots = num_slots
         self.slot_dim = slot_dim
         self.mlp_hidden_dim = mlp_hidden_dim
         self.epsilon = epsilon
 
-        # Parameters for Gaussian init, shared by all slots.
-        self.slots_mu = nn.Parameter(torch.empty(1, 1, slot_dim))
-        self.slots_log_sigma = nn.Parameter(torch.empty(1, 1, slot_dim))
-
-        nn.init.xavier_uniform_(self.slots_mu)
-        nn.init.xavier_uniform_(self.slots_log_sigma)
-
         self.norm_inputs = nn.LayerNorm(slot_dim)
         self.norm_slots = nn.LayerNorm(slot_dim)
         self.norm_mlp = nn.LayerNorm(slot_dim)
-
-        # Parameters for Gaussian init, shared by all slots.
-        self.slots_mu = nn.Parameter(torch.empty(1, 1, slot_dim))
-        self.slots_log_sigma = nn.Parameter(torch.empty(1, 1, slot_dim))
-
-        nn.init.xavier_uniform_(self.slots_mu)
-        nn.init.xavier_uniform_(self.slots_log_sigma)
 
         # Linear maps for attention.
         self.project_q = nn.Linear(slot_dim, slot_dim, bias=False)
@@ -71,19 +74,6 @@ class SlotAttentionLayer(nn.Module):
             nn.Linear(mlp_hidden_dim, slot_dim),
         )
 
-    def initialize_slots(self, batch_size: int) -> Tensor:
-        """
-        Args:
-            batch_size: Batch size for the output slots.
-
-        Returns:
-            slots: [B, num_slots, slot_dim]
-        """
-        mu = self.slots_mu.expand(batch_size, self.num_slots, -1)
-        sigma = torch.exp(self.slots_log_sigma).expand(batch_size, self.num_slots, -1)
-        slots = mu + sigma * torch.randn_like(mu)
-        return slots
-
     def forward(self, feats: Tensor, slots: Tensor) -> Tensor:
         """
         Args:
@@ -96,14 +86,11 @@ class SlotAttentionLayer(nn.Module):
         assert feats.ndim == 3, f"Expected feats with shape [B, N, D], got {feats.shape}"
         assert slots.ndim == 3, f"Expected slots with shape [B, num_slots, D], got {slots.shape}"
 
-        b, n, c = feats.shape
+        _, _, slot_dim = slots.shape
+        assert slot_dim == self.slot_dim, f"Expected slot_dim={self.slot_dim}, got {slot_dim}"
 
-        if c != self.slot_dim:
-            raise ValueError(
-                f"Expects input_dim == slot_dim. "
-                f"Got input_dim={c}, slot_dim={self.slot_dim}. "
-                f"If your input dim differs, add an input projection before SlotAttention."
-            )
+        b, _, c = feats.shape
+        assert c == self.slot_dim, f"Expected feat_dim={self.slot_dim}, got {c}"
 
         # Apply layer norm to input.
         feats = self.norm_inputs(feats)
@@ -141,7 +128,7 @@ class SlotAttentionLayer(nn.Module):
                 slots_prev.reshape(-1, self.slot_dim),
             )
 
-            slots = slots.reshape(b, self.num_slots, self.slot_dim)
+            slots = slots.reshape(b, -1, self.slot_dim)
 
             # MLP residual.
             slots = slots + self.mlp(self.norm_mlp(slots))

@@ -162,16 +162,16 @@ class Logger(LoggerBase):
         self.writer.add_video(f'{mode}/Visualization',vid, epoch)
 
         # Visualize contribution
-        contrib_vis = out.gs_render['contrib_vis'][0].detach()
-        in_band = out.gs_render['in_band'][0].detach().mean()
-        self.writer.add_histogram(f'{mode}/contrib_vis', contrib_vis, epoch)
-        self.writer.add_scalar(f'{mode}/contrib_in_band', in_band.item(), epoch)
+        # contrib_vis = out.gs_render['contrib_vis'][0].detach()
+        # in_band = out.gs_render['in_band'][0].detach().mean()
+        # self.writer.add_histogram(f'{mode}/contrib_vis', contrib_vis, epoch)
+        # self.writer.add_scalar(f'{mode}/contrib_in_band', in_band.item(), epoch)
 
         # Log to WanDB
         self.wandb_run.log({
             f'{mode}/Visualization': wandb.Video((vid*255.0).clip(0,255), fps=4, format="gif"),
-            f'{mode}/contrib_vis': wandb.Histogram(contrib_vis.cpu().numpy()),
-            f'{mode}/contrib_in_band': in_band.item(),
+            # f'{mode}/contrib_vis': wandb.Histogram(contrib_vis.cpu().numpy()),
+            # f'{mode}/contrib_in_band': in_band.item(),
             f'{mode}_step': epoch
         })
 

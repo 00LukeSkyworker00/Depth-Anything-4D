@@ -189,19 +189,18 @@ def process(rank, args):
         loss_weight = {
             'recon': 0.0,
             'ssim': 0.0,
-            'depth': 0.05,
+            'depth': 1.00,
             'log_depth': 0.00,
             'grad_depth': 0.00,
-            'contrib': 0.01,
-            'spread': 0.00,
+            # 'contrib': 0.00,
+            # 'spread': 0.00,
         }
 
-        (color_pred, depth_pred, contrib_loss, spread_loss) = (
-            output.gs_render["colors"], 
-            output.gs_render["depths"], 
-            output.gs_render["contrib_loss"],
-            output.gs_render["spread_loss"]
-        )
+        color_pred = output.gs_render["colors"]
+        depth_pred = output.gs_render["depths"]
+        # contrib_loss = output.gs_render["contrib_loss"]
+        # spread_loss = output.gs_render["spread_loss"]
+
         depth_teacher = output.depth.detach()
         conf = output.depth_conf.detach()
 
@@ -246,8 +245,8 @@ def process(rank, args):
             grad_loss = weighted_mean((dx_p - dx_t).abs(), wdx) + weighted_mean((dy_p - dy_t).abs(), wdy)
             append_loss('grad_depth', grad_loss)
         
-        append_loss('contrib', contrib_loss)
-        append_loss('spread', spread_loss)
+        # append_loss('contrib', contrib_loss)
+        # append_loss('spread', spread_loss)
 
         return loss, loss_dict
 
