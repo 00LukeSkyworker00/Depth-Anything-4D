@@ -249,14 +249,15 @@ class DepthAnything3Net(nn.Module):
         raw_gs = sum(gs_layers[1:], gs_layers[0])
         output.gs_layers = gs_layers
         output.gs = raw_gs
+        output.kl_div = out_dict.get("kl_div", None)
 
         if "extrinsics"  in output and "intrinsics" in output:
             gs_render = self.rasterize_gs(output, raw_gs, **self.rasterize_cfg)
             output.gs_render = gs_render
-            output.gs_render_layers = []
-            for gs in gs_layers:
-                gs_render = self.rasterize_gs(output, gs, **self.rasterize_cfg)
-                output.gs_render_layers.append(gs_render)
+            # output.gs_render_layers = []
+            # for gs in gs_layers:
+            #     gs_render = self.rasterize_gs(output, gs, **self.rasterize_cfg)
+            #     output.gs_render_layers.append(gs_render)
             
         return output
 

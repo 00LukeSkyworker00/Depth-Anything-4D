@@ -77,16 +77,11 @@ raft_head:
 
 scene_head:
   __object__:
-    path: depth_anything_3.model.scene_dec_v2
+    path: depth_anything_3.model.scene_dec_v3
     name: SceneAutoEncoder
     args: as_params
 
   dim_in: *head_dim_in
-  token_dim: 512
-  feat_res: [1,2,4,8]
-  num_latents: 8  # Number of latents for the scene
-  start_tokens: 100  # Number of tokens sampled for the coarsest level (multiplied by num_latents)
-  densify_tokens: [100, 100, 100, 100]  # Number of tokens sampled for next level (multiplied by num_latents)
   gs_params: ['pos','scale','rot']  # 'pos','scale','rot','opac','col'
 
 rasterize_cfg:

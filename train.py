@@ -192,6 +192,7 @@ def process(rank, args):
             'depth': 1.00,
             'log_depth': 0.00,
             'grad_depth': 0.00,
+            'kl_div': 1e-4,
             # 'contrib': 0.00,
             # 'spread': 0.00,
         }
@@ -214,7 +215,8 @@ def process(rank, args):
             nonlocal loss, loss_dict
             if name not in loss_weight or loss_weight[name] <= 0:
                 return
-            loss += loss_weight[name] * loss_tensor
+            loss_tensor = loss_tensor * loss_weight[name]
+            loss += loss_tensor
             loss_tensor = reduce_loss(loss_tensor) if is_reduce else loss_tensor
             loss_dict[name] = loss_tensor.item()
 
@@ -245,6 +247,11 @@ def process(rank, args):
             grad_loss = weighted_mean((dx_p - dx_t).abs(), wdx) + weighted_mean((dy_p - dy_t).abs(), wdy)
             append_loss('grad_depth', grad_loss)
         
+        if 'kl_div' in loss_weight and loss_weight['kl_div'] > 0:
+            if hasattr(output, 'kl_div') and output.kl_div is not None:
+                kl_loss = output.kl_div
+                append_loss('kl_div', kl_loss)
+
         # append_loss('contrib', contrib_loss)
         # append_loss('spread', spread_loss)
 
