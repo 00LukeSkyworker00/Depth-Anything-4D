@@ -159,11 +159,14 @@ def render_3dgs(
         all_conics.extend(conics)
         all_opacities.extend(opacities)
 
-    return (
-        torch.stack(all_images), torch.stack(all_depths), 
-        torch.stack(all_radii), torch.stack(all_means2d), 
-        torch.stack(all_conics), torch.stack(all_opacities)
-    )
+    return {
+        'colors': torch.stack(all_images), 
+        'depths': torch.stack(all_depths), 
+        'radii': torch.stack(all_radii), 
+        'means2d': torch.stack(all_means2d), 
+        'conics': torch.stack(all_conics), 
+        'opacities': torch.stack(all_opacities)
+    }
 
 
 def run_renderer_in_chunk_w_trj_mode(
@@ -343,14 +346,7 @@ def run_renderer_in_chunk_w_trj_mode(
         s = int(chunk_idx * chunk_size)
         e = int((chunk_idx + 1) * chunk_size)
         cur_n_view = tgt_extr[:, s:e].shape[1]
-        (
-            color,
-            depth,
-            radii,
-            means2d,
-            conics,
-            opacities,
-        ) = render_3dgs(
+        out = render_3dgs(
             extrinsics=rearrange(tgt_extr[:, s:e], "b v ... -> (b v) ..."),  # w2c
             intrinsics=rearrange(tgt_intr[:, s:e], "b v ... -> (b v) ..."),  # normed
             image_shape=image_shape,
@@ -358,6 +354,11 @@ def run_renderer_in_chunk_w_trj_mode(
             num_view=cur_n_view,
             **kwargs,
         )
+        color, depth = out['colors'], out['depths']
+        radii = out['radii']
+        means2d = out['means2d']
+        conics = out['conics']
+        opacities = out['opacities']
         all_colors.append(rearrange(color, "(b v) ... -> b v ...", v=cur_n_view))
         all_depths.append(rearrange(depth, "(b v) ... -> b v ...", v=cur_n_view))
         all_radii.append(rearrange(radii, "(b v) ... -> b v ...", v=cur_n_view))

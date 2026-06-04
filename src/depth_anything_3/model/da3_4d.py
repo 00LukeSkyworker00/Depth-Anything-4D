@@ -34,7 +34,7 @@ from depth_anything_3.utils.geometry import affine_inverse, as_homogeneous, map_
 from depth_anything_3.utils.ray_utils import get_extrinsic_from_camray
 from depth_anything_3.specs import Gaussians
 
-from depth_anything_3.model.utils.gs_renderer import run_renderer_in_chunk_w_trj_mode
+from depth_anything_3.model.utils.gs_renderer import run_renderer_in_chunk_w_trj_mode, render_3dgs
 # from fused_ssim import fused_ssim
 
 def vram() -> str:
@@ -266,16 +266,27 @@ class DepthAnything3Net(nn.Module):
                      contrib_min:float=1e-4, contrib_max:float=1e-2):
         ext = output.extrinsics
         ixt = output.intrinsics
-        colors, depths, meta = run_renderer_in_chunk_w_trj_mode(
-            gaussians=raw_gs,
-            extrinsics=ext,
-            intrinsics=ixt,
-            image_shape=(504,504),
-            chunk_size=chunk_size,
-            trj_mode='original',
-            use_sh=False,
-            return_meta=True
-        )
+        
+        if ext.shape[1] == 1:
+            out = render_3dgs(
+                gaussian=raw_gs,
+                extrinsics=as_homogeneous(ext[:,0]),
+                intrinsics=ixt[:,0],
+                image_shape=(504,504)
+            )
+            colors = out['colors'].unsqueeze(1)
+            depths = out['depths'].unsqueeze(1)
+        else:
+            colors, depths, meta = run_renderer_in_chunk_w_trj_mode(
+                gaussians=raw_gs,
+                extrinsics=ext,
+                intrinsics=ixt,
+                image_shape=(504,504),
+                chunk_size=chunk_size,
+                trj_mode='original',
+                use_sh=False,
+                return_meta=True
+            )
         
         # # The contribution is calculated in log space for better numerical stability, 
         # # and is a combination of visibility, opacity, and projected area (conics) of the Gaussian splats.
